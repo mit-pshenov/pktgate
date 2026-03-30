@@ -27,14 +27,22 @@ static void sighup_handler(int) { g_reload = 1; }
 
 /// Attempt to reload config and deploy to shadow generation.
 /// On failure, active generation is untouched — traffic keeps flowing.
+/// Guard prevents re-entrant calls (SIGHUP arriving during inotify reload).
 static void do_reload(const char* config_path,
                       pktgate::pipeline::PipelineBuilder& builder,
                       pktgate::compiler::IfindexResolver& resolver) {
+    static bool reloading = false;
+    if (reloading) {
+        LOG_WRN("Reload already in progress, skipping");
+        return;
+    }
+    reloading = true;
     LOG_INF("Reloading config from %s ...", config_path);
 
     auto result = pktgate::config::parse_config(config_path);
     if (!result) {
         LOG_ERR("Reload: parse failed: %s", result.error().c_str());
+        reloading = false;
         return;
     }
 
@@ -42,6 +50,7 @@ static void do_reload(const char* config_path,
     auto dr = builder.deploy(cfg, resolver);
     if (!dr) {
         LOG_ERR("Reload: deploy failed: %s", dr.error().c_str());
+        reloading = false;
         return;
     }
 
@@ -49,6 +58,7 @@ static void do_reload(const char* config_path,
             cfg.pipeline.layer_2.size(),
             cfg.pipeline.layer_3.size(),
             cfg.pipeline.layer_4.size());
+    reloading = false;
 }
 
 /// Setup inotify watch on config file. Returns inotify fd (or -1 on failure).
@@ -243,6 +253,7 @@ int main(int argc, char* argv[]) {
                     LOG_DBG("Config file empty after change — skipping reload");
                 } else {
                     LOG_INF("Config file changed — triggering reload");
+                    g_reload = 0;  /* clear pending SIGHUP — will re-set if new signal arrives */
                     do_reload(config_path, builder, resolver);
                 }
             }
