@@ -1,6 +1,6 @@
 #pragma once
 
-#include "loader/bpf_loader.hpp"
+#include "loader/map_registry.hpp"
 #include "../../bpf/common.h"
 
 #include <bpf/bpf.h>
@@ -16,11 +16,11 @@ namespace pktgate::pipeline {
 /// Reads BPF per-CPU stats map and prints aggregated counters.
 class StatsReader {
 public:
-    explicit StatsReader(loader::BpfLoader& loader) : loader_(loader) {}
+    explicit StatsReader(const loader::MapRegistry& registry) : registry_(registry) {}
 
     /// Read all counters, sum across CPUs, print to stderr.
     void print() const {
-        int fd = loader_.stats_map_fd();
+        int fd = registry_.stats_map_fd();
         if (fd < 0) {
             std::fprintf(stderr, "[STATS] stats_map not available\n");
             return;
@@ -86,6 +86,10 @@ public:
             "  l3v6/fragment:        %llu\n"
             "  l4/v6_fragment:       %llu\n"
             "\n"
+            "  --- AF_XDP ---\n"
+            "  userspace:            %llu\n"
+            "  userspace/fail:       %llu\n"
+            "\n"
             "  --- Additional ---\n"
             "  l3/fragment:          %llu\n"
             "  l4/not_ipv4:          %llu\n",
@@ -124,12 +128,14 @@ public:
             (unsigned long long)totals[STAT_DROP_L3_V6_DEFAULT],
             (unsigned long long)totals[STAT_DROP_L3_V6_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L4_V6_FRAGMENT],
+            (unsigned long long)totals[STAT_USERSPACE],
+            (unsigned long long)totals[STAT_USERSPACE_FAIL],
             (unsigned long long)totals[STAT_DROP_L3_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L4_NOT_IPV4]);
     }
 
 private:
-    loader::BpfLoader& loader_;
+    const loader::MapRegistry& registry_;
 };
 
 } // namespace pktgate::pipeline

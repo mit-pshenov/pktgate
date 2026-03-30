@@ -2,7 +2,6 @@
 
 #include "config/config_model.hpp"
 #include "compiler/rule_compiler.hpp"
-#include "loader/bpf_loader.hpp"
 #include "pipeline/generation_manager.hpp"
 #include "pipeline/deploy_stats.hpp"
 #include <expected>
@@ -13,7 +12,7 @@ namespace pktgate::pipeline {
 
 class PipelineBuilder {
 public:
-    PipelineBuilder(loader::BpfLoader& loader, GenerationManager& gen_mgr);
+    explicit PipelineBuilder(GenerationManager& gen_mgr);
 
     /// Build and deploy a new pipeline from config.
     /// Compiles objects/rules, fills shadow maps, commits.
@@ -25,7 +24,6 @@ public:
     const std::optional<DeployStats>& last_stats() const { return last_stats_; }
 
 private:
-    loader::BpfLoader& loader_;
     GenerationManager& gen_mgr_;
     std::optional<DeployStats> last_stats_;
 };

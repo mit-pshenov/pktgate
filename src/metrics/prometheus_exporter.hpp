@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../loader/bpf_loader.hpp"
+#include "../loader/map_registry.hpp"
 #include "../../bpf/common.h"
 
 #include <bpf/bpf.h>
@@ -125,6 +125,12 @@ static constexpr MetricDesc kMetrics[] = {
      nullptr, "counter"},
     {STAT_DROP_L4_V6_FRAGMENT,    "pktgate_drop_total{layer=\"l4\",reason=\"v6_fragment\"}",
      nullptr, "counter"},
+
+    // ── AF_XDP userspace ──
+    {STAT_USERSPACE,              "pktgate_action_total{action=\"userspace\"}",
+     nullptr, "counter"},
+    {STAT_USERSPACE_FAIL,         "pktgate_action_total{action=\"userspace_fail\"}",
+     nullptr, "counter"},
 };
 
 static_assert(sizeof(kMetrics) / sizeof(kMetrics[0]) == STAT__MAX,
@@ -136,8 +142,8 @@ static constexpr size_t kNumMetrics = sizeof(kMetrics) / sizeof(kMetrics[0]);
 /// Runs in a background thread. Thread-safe: only reads BPF maps (lockless percpu).
 class PrometheusExporter {
 public:
-    PrometheusExporter(loader::BpfLoader& loader, uint16_t port)
-        : loader_(loader), port_(port) {}
+    PrometheusExporter(const loader::MapRegistry& registry, uint16_t port)
+        : registry_(registry), port_(port) {}
 
     ~PrometheusExporter() { stop(); }
 
@@ -228,7 +234,7 @@ private:
     }
 
     std::string build_metrics() {
-        int fd = loader_.stats_map_fd();
+        int fd = registry_.stats_map_fd();
         if (fd < 0)
             return "# stats_map not available\n";
 
@@ -275,7 +281,7 @@ private:
         return out;
     }
 
-    loader::BpfLoader& loader_;
+    const loader::MapRegistry& registry_;
     uint16_t port_;
     int listen_fd_ = -1;
     std::atomic<bool> running_{false};

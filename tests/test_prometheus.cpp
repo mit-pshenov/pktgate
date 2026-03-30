@@ -62,14 +62,14 @@ static std::string http_get(uint16_t port) {
 
 TEST(test_exporter_starts_and_stops) {
     pktgate::loader::BpfLoader loader;  // not loaded — fd=-1
-    pktgate::metrics::PrometheusExporter exp(loader, 19090);
+    pktgate::metrics::PrometheusExporter exp(loader.registry(),19090);
     ASSERT(exp.start());
     exp.stop();
 }
 
 TEST(test_exporter_responds_http) {
     pktgate::loader::BpfLoader loader;
-    pktgate::metrics::PrometheusExporter exp(loader, 19091);
+    pktgate::metrics::PrometheusExporter exp(loader.registry(),19091);
     ASSERT(exp.start());
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -83,7 +83,7 @@ TEST(test_exporter_responds_http) {
 
 TEST(test_metrics_fallback_no_bpf) {
     pktgate::loader::BpfLoader loader;
-    pktgate::metrics::PrometheusExporter exp(loader, 19092);
+    pktgate::metrics::PrometheusExporter exp(loader.registry(),19092);
     ASSERT(exp.start());
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -96,7 +96,7 @@ TEST(test_metrics_fallback_no_bpf) {
 
 TEST(test_multiple_scrapes) {
     pktgate::loader::BpfLoader loader;
-    pktgate::metrics::PrometheusExporter exp(loader, 19093);
+    pktgate::metrics::PrometheusExporter exp(loader.registry(),19093);
     ASSERT(exp.start());
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
@@ -110,10 +110,10 @@ TEST(test_multiple_scrapes) {
 
 TEST(test_port_in_use) {
     pktgate::loader::BpfLoader loader;
-    pktgate::metrics::PrometheusExporter exp1(loader, 19094);
+    pktgate::metrics::PrometheusExporter exp1(loader.registry(),19094);
     ASSERT(exp1.start());
 
-    pktgate::metrics::PrometheusExporter exp2(loader, 19094);
+    pktgate::metrics::PrometheusExporter exp2(loader.registry(),19094);
     ASSERT(!exp2.start());
 
     exp1.stop();
@@ -137,7 +137,7 @@ TEST(test_metric_desc_coverage) {
 
 TEST(test_concurrent_scrapes) {
     pktgate::loader::BpfLoader loader;
-    pktgate::metrics::PrometheusExporter exp(loader, 19095);
+    pktgate::metrics::PrometheusExporter exp(loader.registry(),19095);
     ASSERT(exp.start());
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 

@@ -9,12 +9,12 @@
 
 namespace pktgate::pipeline {
 
-GenerationManager::GenerationManager(loader::BpfLoader& loader)
-    : loader_(loader) {}
+GenerationManager::GenerationManager(const loader::MapRegistry& registry)
+    : registry_(registry) {}
 
 std::expected<void, std::string>
 GenerationManager::install_programs(uint32_t gen) {
-    int pa_fd = loader_.prog_array_fd(gen);
+    int pa_fd = registry_.prog_array_fd(gen);
     if (pa_fd < 0)
         return std::unexpected("Invalid prog_array fd for gen " + std::to_string(gen));
 
@@ -22,21 +22,21 @@ GenerationManager::install_programs(uint32_t gen) {
     int fd;
 
     idx = LAYER_2_IDX;
-    fd = loader_.layer2_prog_fd();
+    fd = registry_.layer2_prog_fd();
     if (fd < 0)
         return std::unexpected("Invalid layer2 prog fd");
     auto r = loader::MapManager::update_elem(pa_fd, &idx, &fd, BPF_ANY);
     if (!r) return std::unexpected("prog_array[L2]: " + r.error());
 
     idx = LAYER_3_IDX;
-    fd = loader_.layer3_prog_fd();
+    fd = registry_.layer3_prog_fd();
     if (fd < 0)
         return std::unexpected("Invalid layer3 prog fd");
     r = loader::MapManager::update_elem(pa_fd, &idx, &fd, BPF_ANY);
     if (!r) return std::unexpected("prog_array[L3]: " + r.error());
 
     idx = LAYER_4_IDX;
-    fd = loader_.layer4_prog_fd();
+    fd = registry_.layer4_prog_fd();
     if (fd < 0)
         return std::unexpected("Invalid layer4 prog fd");
     r = loader::MapManager::update_elem(pa_fd, &idx, &fd, BPF_ANY);
@@ -49,13 +49,13 @@ GenerationManager::install_programs(uint32_t gen) {
 std::expected<void, std::string>
 GenerationManager::clear_shadow_maps(uint32_t gen) {
     // Clear hash maps using safe iteration
-    auto r = loader::MapManager::clear_hash_map(loader_.mac_allow_fd(gen));
+    auto r = loader::MapManager::clear_hash_map(registry_.mac_allow_fd(gen));
     if (!r) return std::unexpected("clear mac_allow: " + r.error());
 
     // LPM trie: delete tracked keys explicitly (iteration not supported)
     if (!lpm_keys_[gen].empty()) {
         r = loader::MapManager::delete_keys(
-            loader_.subnet_rules_fd(gen), lpm_keys_[gen]);
+            registry_.subnet_rules_fd(gen), lpm_keys_[gen]);
         if (!r) return std::unexpected("clear subnet_rules: " + r.error());
         lpm_keys_[gen].clear();
     }
@@ -63,15 +63,15 @@ GenerationManager::clear_shadow_maps(uint32_t gen) {
     // IPv6 LPM trie
     if (!lpm6_keys_[gen].empty()) {
         r = loader::MapManager::delete_keys(
-            loader_.subnet6_rules_fd(gen), lpm6_keys_[gen]);
+            registry_.subnet6_rules_fd(gen), lpm6_keys_[gen]);
         if (!r) return std::unexpected("clear subnet6_rules: " + r.error());
         lpm6_keys_[gen].clear();
     }
 
-    r = loader::MapManager::clear_hash_map(loader_.vrf_rules_fd(gen));
+    r = loader::MapManager::clear_hash_map(registry_.vrf_rules_fd(gen));
     if (!r) return std::unexpected("clear vrf_rules: " + r.error());
 
-    r = loader::MapManager::clear_hash_map(loader_.l4_rules_fd(gen));
+    r = loader::MapManager::clear_hash_map(registry_.l4_rules_fd(gen));
     if (!r) return std::unexpected("clear l4_rules: " + r.error());
 
     return {};
@@ -81,7 +81,7 @@ std::expected<void, std::string>
 GenerationManager::populate_mac_map(uint32_t gen,
                                      const compiler::CompiledObjects& objects) {
     if (objects.macs.empty()) return {};
-    int fd = loader_.mac_allow_fd(gen);
+    int fd = registry_.mac_allow_fd(gen);
 
     // Try batch update first
     std::vector<struct mac_key> keys;
@@ -113,7 +113,7 @@ GenerationManager::populate_mac_map(uint32_t gen,
 std::expected<void, std::string>
 GenerationManager::populate_subnet_map(uint32_t gen,
                                         const compiler::CompiledRules& rules) {
-    int fd = loader_.subnet_rules_fd(gen);
+    int fd = registry_.subnet_rules_fd(gen);
     for (auto& cr : rules.l3_rules) {
         if (cr.is_vrf_rule) continue;
         auto r = loader::MapManager::update_elem(fd, &cr.subnet_key, &cr.rule, BPF_ANY);
@@ -129,7 +129,7 @@ GenerationManager::populate_subnet_map(uint32_t gen,
 std::expected<void, std::string>
 GenerationManager::populate_subnet6_map(uint32_t gen,
                                          const compiler::CompiledRules& rules) {
-    int fd = loader_.subnet6_rules_fd(gen);
+    int fd = registry_.subnet6_rules_fd(gen);
     for (auto& cr : rules.l3v6_rules) {
         auto r = loader::MapManager::update_elem(fd, &cr.subnet_key, &cr.rule, BPF_ANY);
         if (!r) return std::unexpected("subnet6_rules insert (rule " +
@@ -143,7 +143,7 @@ GenerationManager::populate_subnet6_map(uint32_t gen,
 std::expected<void, std::string>
 GenerationManager::populate_vrf_map(uint32_t gen,
                                      const compiler::CompiledRules& rules) {
-    int fd = loader_.vrf_rules_fd(gen);
+    int fd = registry_.vrf_rules_fd(gen);
     for (auto& cr : rules.l3_rules) {
         if (!cr.is_vrf_rule) continue;
         struct vrf_key vk = { .ifindex = cr.vrf_ifindex };
@@ -158,7 +158,7 @@ std::expected<void, std::string>
 GenerationManager::populate_l4_map(uint32_t gen,
                                     const compiler::CompiledRules& rules) {
     if (rules.l4_rules.empty()) return {};
-    int fd = loader_.l4_rules_fd(gen);
+    int fd = registry_.l4_rules_fd(gen);
 
     // Try batch update first
     std::vector<struct l4_match_key> keys;
@@ -190,7 +190,7 @@ GenerationManager::populate_l4_map(uint32_t gen,
 
 std::expected<void, std::string>
 GenerationManager::set_default_action(uint32_t gen, config::Action action) {
-    int fd = loader_.default_action_fd(gen);
+    int fd = registry_.default_action_fd(gen);
     uint32_t key = 0;
     uint32_t val;
 
@@ -271,7 +271,7 @@ GenerationManager::commit() {
 
     // Atomic switch: update gen_config to point to shadow
     auto r = loader::MapManager::update_elem(
-        loader_.gen_config_fd(), &key, &new_gen, BPF_ANY);
+        registry_.gen_config_fd(), &key, &new_gen, BPF_ANY);
     if (!r) return std::unexpected("gen_config update: " + r.error());
 
     active_gen_.store(new_gen);
@@ -294,7 +294,7 @@ GenerationManager::rollback() {
     uint32_t key = 0;
 
     auto r = loader::MapManager::update_elem(
-        loader_.gen_config_fd(), &key, &old_gen, BPF_ANY);
+        registry_.gen_config_fd(), &key, &old_gen, BPF_ANY);
     if (!r) return std::unexpected("rollback gen_config: " + r.error());
 
     active_gen_.store(old_gen);

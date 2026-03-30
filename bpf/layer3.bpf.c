@@ -19,6 +19,18 @@
  *    otherwise apply default action.
  */
 
+/* Intercept XDP_PASS when ACT_USERSPACE flag is set — redirect to AF_XDP. */
+static __always_inline int maybe_redirect_xsk(struct xdp_md *ctx,
+                                               struct pkt_meta *meta,
+                                               int fallback)
+{
+    if (meta->action_flags & (1 << ACT_USERSPACE)) {
+        STAT_INC(STAT_USERSPACE);
+        return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, fallback);
+    }
+    return fallback;
+}
+
 static __always_inline int get_default_action(struct pkt_meta *meta)
 {
     __u32 key = 0;
@@ -90,6 +102,12 @@ static __always_inline int handle_l3_action(struct xdp_md *ctx,
         BPF_DBG("L3: rule %d → MIRROR ifindex=%d", rule->rule_id, rule->mirror_ifindex);
         break;
 
+    case ACT_USERSPACE:
+        /* Set flag for L4 interception or terminal redirect. */
+        meta->action_flags |= (1 << ACT_USERSPACE);
+        BPF_DBG("L3: rule %d → USERSPACE", rule->rule_id);
+        break;
+
     default:
         STAT_INC(STAT_DROP_L3_RULE);
         return XDP_DROP;
@@ -108,7 +126,7 @@ static __always_inline int handle_l3_action(struct xdp_md *ctx,
     }
 
     STAT_INC(STAT_PASS_L3);
-    return XDP_PASS;
+    return maybe_redirect_xsk(ctx, meta, XDP_PASS);
 }
 
 /* IPv6 variant — identical logic but uses v6-specific stat counters */
@@ -142,6 +160,11 @@ static __always_inline int handle_l3_action_v6(struct xdp_md *ctx,
         BPF_DBG("L3v6: rule %d → MIRROR ifindex=%d", rule->rule_id, rule->mirror_ifindex);
         break;
 
+    case ACT_USERSPACE:
+        meta->action_flags |= (1 << ACT_USERSPACE);
+        BPF_DBG("L3v6: rule %d → USERSPACE", rule->rule_id);
+        break;
+
     default:
         STAT_INC(STAT_DROP_L3_V6_RULE);
         return XDP_DROP;
@@ -158,7 +181,7 @@ static __always_inline int handle_l3_action_v6(struct xdp_md *ctx,
     }
 
     STAT_INC(STAT_PASS_L3_V6);
-    return XDP_PASS;
+    return maybe_redirect_xsk(ctx, meta, XDP_PASS);
 }
 
 SEC("xdp")

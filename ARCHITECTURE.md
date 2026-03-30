@@ -139,6 +139,7 @@ struct port_val { __u32 group_id; };  // к какой группе принад
 | `redirect`  | `bpf_redirect(ifindex, 0)` — перенаправление в другой VRF/порт   | XDP/TC  |
 | `tag`       | Перезапись DSCP: `iph->tos = (iph->tos & 0x3) \| (dscp << 2)`; CoS: через `bpf_skb_set_tunnel_key` или VLAN PCP rewrite | TC |
 | `rate-limit`| Per-CPU token bucket: `PERCPU_HASH`, rate/ncpus, 1s burst cap, elapsed clamp | XDP |
+| `userspace` | `bpf_redirect_map(&xsks_map, rx_queue_index, XDP_PASS)` — AF_XDP fast path | XDP |
 
 ### 3.6. Гибридная модель XDP + TC
 
@@ -154,6 +155,33 @@ NIC → [XDP: L2 filter + L3 (drop/redirect/allow)] → [TC ingress: L3 mirror +
 
 Решение принимается на этапе компиляции конфига: если pipeline содержит только
 drop/allow/redirect — используется чистый XDP. Если есть mirror/tag — подключается TC.
+
+### 3.7. AF_XDP Userspace Fast Path
+
+Правила с `ACT_USERSPACE` перенаправляют пакеты в userspace через AF_XDP сокеты.
+Пакет проходит полный pipeline (L2→L3→L4), затем `bpf_redirect_map(&xsks_map)`.
+
+```
+entry → L2 → L3 → L4 ─┬─ XDP_PASS ──► TC ingress ──► kernel stack
+                        │
+                        └─ ACT_USERSPACE ──► bpf_redirect_map(&xsks_map)
+                                                    │
+                                                    ▼
+                                              AF_XDP socket(s)
+                                              (per-queue threads)
+```
+
+**Ключевые решения:**
+- **Post-filter redirect**: полная фильтрация перед AF_XDP — userspace видит только разрешённый трафик.
+- **XDP_PASS fallback**: если AF_XDP сокет не привязан к очереди, пакет идёт в kernel stack.
+- **xsks_map не double-buffered**: сокеты живут через config reload, как stats_map.
+- **TC bypass**: XDP_REDIRECT минует TC ingress → mirror+userspace и tag+userspace на одном пакете **не поддерживаются** (валидатор предупредит).
+
+**Control plane** (`src/xdp/`):
+- `XdpSocket` — RAII обёртка: UMEM mmap, RX/fill rings, bind, poll_rx, refill.
+  Использует raw Linux AF_XDP API (`linux/if_xdp.h`), без libxdp.
+- `XdpSocketManager` — создаёт N сокетов (по числу RX queues), запускает worker threads,
+  вызывает `PacketCallback(data, len)` для каждого пакета. Thread-safe callback required.
 
 ---
 
@@ -173,13 +201,15 @@ drop/allow/redirect — используется чистый XDP. Если ес
 │ default_action_0/1     │ ARRAY(1)             │ 0 → __u32 (filter_action)    │
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
 │ rate_state_map         │ PERCPU_HASH(4096)    │ rule_id → rate_state         │
-│ stats_map              │ PERCPU_ARRAY(37)     │ stat_key → __u64 (counter)   │
+│ stats_map              │ PERCPU_ARRAY(39)     │ stat_key → __u64 (counter)   │
+│ xsks_map               │ XSKMAP(64)           │ queue_id → xsk_fd            │
 └────────────────────────┴──────────────────────┴──────────────────────────────┘
 
-Итого: 15 maps (2 shared + 6×2 double-buffered + 1 rate_state).
+Итого: 17 maps (3 shared + 6×2 double-buffered + 1 rate_state).
 Maps _0/_1 — двойная буферизация для generation swap.
-rate_state_map и stats_map общие (не буферизируются).
-stats_map — 37 per-CPU счётчиков: entry/L2/L3/L4 drops, pass/actions, TC mirror/tag, IPv6 L3/L4, fragment/proto drops (см. секцию 8).
+rate_state_map, stats_map и xsks_map общие (не буферизируются).
+xsks_map — AF_XDP socket map, не double-buffered (сокеты живут через config reload).
+stats_map — 39 per-CPU счётчиков: entry/L2/L3/L4 drops, pass/actions, TC mirror/tag, IPv6 L3/L4, fragment/proto drops, AF_XDP userspace (см. секцию 8).
 ```
 
 **`pkt_meta`** — передаётся через XDP `data_meta` area (не через BPF map):
@@ -341,10 +371,18 @@ filter/
 │   │   └── rule_compiler.cpp    ← port group expansion, key collision detection, rate/ncpus
 │   │
 │   ├── loader/
-│   │   ├── bpf_loader.hpp       ← libbpf skeleton wrapper (4 programs, map reuse)
+│   │   ├── bpf_loader.hpp       ← libbpf skeleton wrapper (5 programs, map reuse)
 │   │   ├── bpf_loader.cpp
+│   │   ├── map_registry.hpp     ← FD registry: map/prog name+gen → fd
+│   │   ├── map_registry.cpp
 │   │   ├── map_manager.hpp      ← CRUD для BPF maps + batch_update
 │   │   └── map_manager.cpp      ← batch_update с fallback, safe hash iteration
+│   │
+│   ├── xdp/
+│   │   ├── xdp_socket.hpp       ← RAII AF_XDP socket (UMEM, RX/fill rings)
+│   │   ├── xdp_socket.cpp
+│   │   ├── xdp_socket_manager.hpp ← multi-queue AF_XDP worker threads
+│   │   └── xdp_socket_manager.cpp
 │   │
 │   ├── pipeline/
 │   │   ├── deploy_stats.hpp     ← DeployStats + ScopedTimer (per-phase timing)
@@ -358,7 +396,7 @@ filter/
 │       ├── net_types.hpp        ← MacAddr, Ipv4Prefix (parse + NBO), resolve_ifindex
 │       └── log.hpp              ← lightweight printf-based logging
 │
-├── tests/                       ← 334 теста в 15 сьютах
+├── tests/                       ← 350+ тестов в 17 сьютах
 │   ├── test_config_parser.cpp       (24 теста)  — JSON парсинг, DSCP, bandwidth
 │   ├── test_config_validation.cpp   (30 тестов) — edge cases, все action/DSCP types
 │   ├── test_config_validator.cpp    (27 тестов) — семантика: refs, duplicates, params
@@ -372,6 +410,7 @@ filter/
 │   ├── test_roundtrip.cpp           (17 тестов) — parse → validate → compile → verify
 │   ├── test_stress.cpp              (9 тестов)  — 4096 rules, 16K subnets
 │   ├── test_concurrency.cpp         (13 тестов) — multi-threaded gen swap
+│   ├── test_afxdp_config.cpp         (12 тестов) — AF_XDP config parse/validate/compile
 │   ├── bpf/test_bpf_dataplane.cpp   (23 теста)  — BPF_PROG_TEST_RUN (requires sudo)
 │   └── bench_compile.cpp           — бенчмарк: small/medium/large конфиги
 │
@@ -398,14 +437,23 @@ struct ObjectStore {
     std::unordered_map<std::string, std::vector<uint16_t>>    port_groups; // name → ports
 };
 
-enum class Action { Allow, Drop, Mirror, Redirect, Tag, RateLimit };
+enum class Action { Allow, Drop, Mirror, Redirect, Tag, RateLimit, Userspace };
+
+struct AfXdpConfig {
+    bool     enabled    = false;
+    uint32_t queues     = 0;      // 0 = auto-detect
+    bool     zero_copy  = false;
+    uint32_t frame_size = 4096;
+    uint32_t num_frames = 4096;
+};
 
 struct Config {
-    std::string interface;
-    std::string capacity;
-    ObjectStore objects;
-    Pipeline    pipeline;    // layer_2, layer_3, layer_4
-    Action      default_behavior = Action::Drop;
+    std::string  interface;
+    std::string  capacity;
+    ObjectStore  objects;
+    Pipeline     pipeline;    // layer_2, layer_3, layer_4
+    Action       default_behavior = Action::Drop;
+    AfXdpConfig  afxdp;
 };
 }  // namespace pktgate::config
 ```
@@ -416,7 +464,7 @@ namespace pktgate::pipeline {
 
 class GenerationManager {
 public:
-    explicit GenerationManager(loader::BpfLoader& loader);
+    explicit GenerationManager(const loader::MapRegistry& registry);
 
     // Заполнить shadow maps скомпилированными данными
     std::expected<void, std::string> prepare(
@@ -435,7 +483,7 @@ public:
 
 private:
     std::atomic<uint32_t> active_gen_{0};
-    loader::BpfLoader& loader_;
+    const loader::MapRegistry& registry_;
     std::vector<std::vector<uint8_t>> lpm_keys_[2]; // LPM key tracking
 };
 }  // namespace pktgate::pipeline
@@ -447,7 +495,7 @@ namespace pktgate::pipeline {
 
 class PipelineBuilder {
 public:
-    PipelineBuilder(loader::BpfLoader& loader, GenerationManager& gen_mgr);
+    explicit PipelineBuilder(GenerationManager& gen_mgr);
 
     // validate → compile objects → compile rules → prepare → commit
     std::expected<void, std::string> deploy(
@@ -486,7 +534,7 @@ bpftool gen skeleton entry.bpf.o > entry.skel.h
 Entry program владеет всеми maps. Layer 2/3/4 переиспользуют maps через
 `bpf_map__reuse_fd()` при загрузке — все программы работают с одними и теми же maps.
 
-**Targets:** `pktgate_ctl` (main), `libpktgate_lib.a` (static lib), 8 test executables, `bench_compile`.
+**Targets:** `pktgate_ctl` (main), `libpktgate_lib.a` (static lib), 19 test executables, `bench_compile`.
 
 ---
 
@@ -590,7 +638,11 @@ enum stat_key {
     STAT_DROP_L3_V6_FRAGMENT = 35,   // IPv6 fragment header at L3
     STAT_DROP_L4_V6_FRAGMENT = 36,   // IPv6 fragment after ext headers in L4
 
-    STAT__MAX                = 37,
+    // AF_XDP userspace
+    STAT_USERSPACE           = 37,   // redirected to AF_XDP socket
+    STAT_USERSPACE_FAIL      = 38,   // bpf_redirect_map failed (no socket)
+
+    STAT__MAX                = 39,
 };
 ```
 
@@ -732,8 +784,9 @@ while (g_running) {
 | 15 | Functional tests: pytest+scapy, 84 теста через реальный XDP трафик на veth | ✅ Завершена |
 | 16 | Audit: IPv6 stats/fragments, reload race guard, CI/CD, README | ✅ Завершена |
 | 17 | Mirror/redirect e2e tests, fuzz CI (smoke + overnight), TEST_PLAN.md | ✅ Завершена |
+| 18 | AF_XDP userspace fast path: MapRegistry, BPF data plane, config, sockets, tests | ✅ Завершена |
 
-**Тесты: 500+ test points** (17 ctest targets + 104 functional + 3 fuzz harnesses).
+**Тесты: 500+ test points** (19 ctest targets + 104 functional + 3 fuzz harnesses).
 Полный тест-план: [TEST_PLAN.md](TEST_PLAN.md).
 
 ### Тестовые наборы
@@ -757,6 +810,8 @@ while (g_running) {
 | ipv6 | 52 | IPv6 prefix parsing, byte layout, rule compilation, dual-stack, config, validation |
 | bpf_dataplane | 23 | BPF_PROG_TEST_RUN (L2/L3/L4/pipeline/bench, requires sudo) |
 | prometheus | 7 | HTTP /metrics, concurrent scrapes, metric coverage |
+| map_registry | 6 | MapRegistry: generational/shared FD lookup, convenience accessors |
+| afxdp_config | 12 | AF_XDP config parse, validate, compile, round-trip |
 
 ### Functional тесты (pytest + scapy, 104 теста)
 
@@ -864,5 +919,7 @@ systemctl enable --now filter
 
 ### Следующие шаги
 
-1. **Coverage-guided fuzzing** — запустить fuzz harnesses с реальным corpus-ом длительно.
-2. **VLAN CoS rewrite** — `bpf_skb_vlan_push/pop` в TC для CoS tagging.
+1. **AF_XDP functional tests** — pytest+scapy через veth с реальным AF_XDP трафиком (copy mode).
+2. **Custom PacketCallback** — API для пользовательской обработки (DPI, analytics, custom forwarding).
+3. **VLAN CoS rewrite** — `bpf_skb_vlan_push/pop` в TC для CoS tagging.
+4. **Coverage-guided fuzzing** — запустить fuzz harnesses с реальным corpus-ом длительно.

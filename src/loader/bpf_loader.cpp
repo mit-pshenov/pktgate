@@ -97,6 +97,7 @@ std::expected<void, std::string> BpfLoader::load() {
         REUSE_MAP(default_action_1);
         REUSE_MAP(rate_state_map);
         REUSE_MAP(stats_map);
+        REUSE_MAP(xsks_map);
 
         #undef REUSE_MAP
         return {};
@@ -143,6 +144,37 @@ std::expected<void, std::string> BpfLoader::load() {
     err = tc_ingress_bpf__load(impl_->tc_ingress);
     if (err)
         return std::unexpected("Failed to load tc_ingress BPF: " + std::string(std::strerror(-err)));
+
+    // Populate MapRegistry with all map and program FDs
+    auto reg = [this](const char* name, uint32_t gen, int fd) {
+        registry_.register_map(name, gen, fd);
+    };
+    auto S = MapRegistry::SHARED;
+
+    reg("gen_config",      S, bpf_map__fd(impl_->entry->maps.gen_config));
+    reg("mac_allow",       0, bpf_map__fd(impl_->entry->maps.mac_allow_0));
+    reg("mac_allow",       1, bpf_map__fd(impl_->entry->maps.mac_allow_1));
+    reg("subnet_rules",    0, bpf_map__fd(impl_->entry->maps.subnet_rules_0));
+    reg("subnet_rules",    1, bpf_map__fd(impl_->entry->maps.subnet_rules_1));
+    reg("subnet6_rules",   0, bpf_map__fd(impl_->entry->maps.subnet6_rules_0));
+    reg("subnet6_rules",   1, bpf_map__fd(impl_->entry->maps.subnet6_rules_1));
+    reg("vrf_rules",       0, bpf_map__fd(impl_->entry->maps.vrf_rules_0));
+    reg("vrf_rules",       1, bpf_map__fd(impl_->entry->maps.vrf_rules_1));
+    reg("l4_rules",        0, bpf_map__fd(impl_->entry->maps.l4_rules_0));
+    reg("l4_rules",        1, bpf_map__fd(impl_->entry->maps.l4_rules_1));
+    reg("prog_array",      0, bpf_map__fd(impl_->entry->maps.prog_array_0));
+    reg("prog_array",      1, bpf_map__fd(impl_->entry->maps.prog_array_1));
+    reg("default_action",  0, bpf_map__fd(impl_->entry->maps.default_action_0));
+    reg("default_action",  1, bpf_map__fd(impl_->entry->maps.default_action_1));
+    reg("rate_state",      S, bpf_map__fd(impl_->entry->maps.rate_state_map));
+    reg("stats_map",       S, bpf_map__fd(impl_->entry->maps.stats_map));
+    reg("xsks_map",        S, bpf_map__fd(impl_->entry->maps.xsks_map));
+
+    registry_.register_prog("entry",      bpf_program__fd(impl_->entry->progs.entry_prog));
+    registry_.register_prog("layer2",     bpf_program__fd(impl_->layer2->progs.layer2_prog));
+    registry_.register_prog("layer3",     bpf_program__fd(impl_->layer3->progs.layer3_prog));
+    registry_.register_prog("layer4",     bpf_program__fd(impl_->layer4->progs.layer4_prog));
+    registry_.register_prog("tc_ingress", bpf_program__fd(impl_->tc_ingress->progs.tc_ingress_prog));
 
     loaded_ = true;
     LOG_INF("All BPF programs loaded and verified (XDP + TC)");
@@ -252,97 +284,6 @@ void BpfLoader::detach_tc() {
         attach_ifindex_ = 0;
         attach_flags_ = 0;
     }
-}
-
-// Map FD accessors
-int BpfLoader::mac_allow_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.mac_allow_0)
-        : bpf_map__fd(impl_->entry->maps.mac_allow_1);
-}
-
-int BpfLoader::subnet_rules_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.subnet_rules_0)
-        : bpf_map__fd(impl_->entry->maps.subnet_rules_1);
-}
-
-int BpfLoader::subnet6_rules_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.subnet6_rules_0)
-        : bpf_map__fd(impl_->entry->maps.subnet6_rules_1);
-}
-
-int BpfLoader::vrf_rules_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.vrf_rules_0)
-        : bpf_map__fd(impl_->entry->maps.vrf_rules_1);
-}
-
-int BpfLoader::l4_rules_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.l4_rules_0)
-        : bpf_map__fd(impl_->entry->maps.l4_rules_1);
-}
-
-int BpfLoader::prog_array_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.prog_array_0)
-        : bpf_map__fd(impl_->entry->maps.prog_array_1);
-}
-
-int BpfLoader::default_action_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.default_action_0)
-        : bpf_map__fd(impl_->entry->maps.default_action_1);
-}
-
-int BpfLoader::gen_config_fd() const {
-    if (!impl_->entry) return -1;
-    return bpf_map__fd(impl_->entry->maps.gen_config);
-}
-
-int BpfLoader::rate_state_fd() const {
-    if (!impl_->entry) return -1;
-    return bpf_map__fd(impl_->entry->maps.rate_state_map);
-}
-
-int BpfLoader::stats_map_fd() const {
-    if (!impl_->entry) return -1;
-    return bpf_map__fd(impl_->entry->maps.stats_map);
-}
-
-// Program FD accessors
-int BpfLoader::entry_prog_fd() const {
-    if (!impl_->entry) return -1;
-    return bpf_program__fd(impl_->entry->progs.entry_prog);
-}
-
-int BpfLoader::layer2_prog_fd() const {
-    if (!impl_->layer2) return -1;
-    return bpf_program__fd(impl_->layer2->progs.layer2_prog);
-}
-
-int BpfLoader::layer3_prog_fd() const {
-    if (!impl_->layer3) return -1;
-    return bpf_program__fd(impl_->layer3->progs.layer3_prog);
-}
-
-int BpfLoader::layer4_prog_fd() const {
-    if (!impl_->layer4) return -1;
-    return bpf_program__fd(impl_->layer4->progs.layer4_prog);
-}
-
-int BpfLoader::tc_ingress_prog_fd() const {
-    if (!impl_->tc_ingress) return -1;
-    return bpf_program__fd(impl_->tc_ingress->progs.tc_ingress_prog);
 }
 
 } // namespace pktgate::loader

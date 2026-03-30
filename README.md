@@ -8,7 +8,8 @@ Uses XDP for fast-path drop/redirect and TC ingress for mirror/DSCP rewrite.
 - **L2 MAC filtering** — hash-based allow-list
 - **L3 IPv4/IPv6 subnet filtering** — LPM trie with per-rule actions
 - **L4 TCP/UDP port filtering** — protocol + port matching
-- **Actions**: allow, drop, redirect (VRF), mirror (clone), tag (DSCP), rate-limit
+- **Actions**: allow, drop, redirect (VRF), mirror (clone), tag (DSCP), rate-limit, userspace (AF_XDP)
+- **AF_XDP userspace fast path** — zero-copy packet delivery to userspace via `bpf_redirect_map`
 - **Hitless config reload** — double-buffered maps with atomic generation swap
 - **Hot reload** — inotify + SIGHUP, debounce, fail-safe (errors don't affect active pipeline)
 - **IPv6 dual-stack** — separate LPM tries, extension header parsing, fragment detection
@@ -19,8 +20,13 @@ Uses XDP for fast-path drop/redirect and TC ingress for mirror/DSCP rewrite.
 
 ```
 NIC → [XDP entry] → tail_call → [L2 MAC] → [L3 IP/LPM] → [L4 port]
-                                                 ↓
-                                          [TC ingress: mirror + DSCP rewrite]
+                                                 │
+                                    ┌────────────┼────────────┐
+                                    ↓            ↓            ↓
+                              XDP_PASS     XDP_REDIRECT   XDP_DROP
+                                 ↓         (AF_XDP)
+                           [TC ingress:
+                            mirror + DSCP]
 ```
 
 - **Data plane**: 5 BPF programs (4 XDP + 1 TC), tail call chaining, metadata via `data_meta`
@@ -59,7 +65,7 @@ cmake --build build -j$(nproc)
 
 ```bash
 # Run directly
-sudo ./build/pktgate_ctl [--json] [--debug] [--metrics-port 9090] config.json
+sudo ./build/pktgate_ctl [--json] [--debug] [--metrics-port 9090] [--afxdp-queues N] config.json
 
 # Systemd
 sudo systemctl start pktgate
@@ -88,9 +94,18 @@ JSON config defines objects (MACs, subnets, port groups) and a layered pipeline:
     ],
     "layer_4": [{ "rule_id": 1000, "match": {"protocol": "TCP", "dst_port": "object:web"}, "action": "allow" }]
   },
-  "default_behavior": "drop"
+  "default_behavior": "drop",
+  "afxdp": {
+    "enabled": true,
+    "queues": 4,
+    "zero_copy": false,
+    "frame_size": 4096,
+    "num_frames": 4096
+  }
 }
 ```
+
+The `afxdp` section enables AF_XDP userspace fast path. Rules with `"action": "userspace"` redirect matched packets to AF_XDP sockets instead of the kernel stack. Fallback to `XDP_PASS` if no socket is bound.
 
 See [sample2.json](sample2.json) for a complete example with all action types.
 
@@ -103,6 +118,7 @@ pktgate_packets_total
 pktgate_drop_total{layer="l3",reason="rule"}
 pktgate_pass_total{layer="l4"}
 pktgate_action_total{action="mirror"}
+pktgate_action_total{action="userspace"}
 pktgate_tc_total{action="tag"}
 ```
 
@@ -110,11 +126,11 @@ A Grafana dashboard is in `grafana/`.
 
 ## Testing
 
-500+ test points: 17 ctest targets + 104 functional tests + 3 fuzz harnesses.
+500+ test points: 19 ctest targets + 104 functional tests + 3 fuzz harnesses.
 See [TEST_PLAN.md](TEST_PLAN.md) for the full test plan with caveats and pre-release checklist.
 
 ```bash
-# C++ unit tests (12 targets)
+# C++ unit tests (13 targets)
 ctest --test-dir build -L unit --output-on-failure
 
 # C++ integration tests (4 targets)

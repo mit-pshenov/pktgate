@@ -99,8 +99,11 @@ add_library(pktgate_lib STATIC
     src/compiler/rule_compiler.cpp
     src/loader/bpf_loader.cpp
     src/loader/map_manager.cpp
+    src/loader/map_registry.cpp
     src/pipeline/generation_manager.cpp
     src/pipeline/pipeline_builder.cpp
+    src/xdp/xdp_socket.cpp
+    src/xdp/xdp_socket_manager.cpp
 )
 
 target_include_directories(pktgate_lib PUBLIC
@@ -281,6 +284,14 @@ add_executable(test_prometheus tests/test_prometheus.cpp)
 target_link_libraries(test_prometheus PRIVATE pktgate_lib pthread)
 add_test(NAME prometheus COMMAND test_prometheus)
 
+add_executable(test_map_registry tests/test_map_registry.cpp)
+target_link_libraries(test_map_registry PRIVATE pktgate_lib)
+add_test(NAME map_registry COMMAND test_map_registry)
+
+add_executable(test_afxdp_config tests/test_afxdp_config.cpp)
+target_link_libraries(test_afxdp_config PRIVATE pktgate_lib)
+add_test(NAME afxdp_config COMMAND test_afxdp_config)
+
 # ── BPF data plane tests (require CAP_BPF / sudo) ────────────
 add_executable(test_bpf_dataplane
     tests/bpf/test_bpf_dataplane.cpp
@@ -300,6 +311,7 @@ set_tests_properties(
     config_parser object_compiler generation_logic net_types
     config_validation rule_compiler_edge config_validator
     byte_layout packet_builder ipv6 fault_injection prometheus
+    afxdp_config
     PROPERTIES LABELS "unit"
 )
 set_tests_properties(

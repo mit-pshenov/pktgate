@@ -14,6 +14,7 @@ static uint32_t action_to_bpf(config::Action a) {
         case config::Action::Redirect:  return 3; // ACT_REDIRECT
         case config::Action::Tag:       return 4; // ACT_TAG
         case config::Action::RateLimit: return 5; // ACT_RATE_LIMIT
+        case config::Action::Userspace: return 6; // ACT_USERSPACE
     }
     return 0;
 }

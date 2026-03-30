@@ -143,6 +143,20 @@ validate_config(const Config& cfg) {
     if (has_rules && cfg.interface.empty())
         errs.push_back({"device_info", "interface must not be empty when rules are defined"});
 
+    // Userspace action requires afxdp.enabled
+    auto check_userspace = [&](const std::vector<Rule>& rules, const std::string& layer) {
+        for (size_t i = 0; i < rules.size(); ++i) {
+            if (rules[i].action == Action::Userspace && !cfg.afxdp.enabled)
+                errs.push_back({layer + "[" + std::to_string(i) + "]",
+                                "userspace action requires afxdp.enabled=true"});
+        }
+    };
+    check_userspace(cfg.pipeline.layer_3, "layer_3");
+    check_userspace(cfg.pipeline.layer_4, "layer_4");
+
+    if (cfg.default_behavior == Action::Userspace)
+        errs.push_back({"default_behavior", "userspace cannot be the default action"});
+
     validate_l2_rules(cfg.pipeline.layer_2, cfg.objects, errs);
     validate_l3_rules(cfg.pipeline.layer_3, cfg.objects, errs);
     validate_l4_rules(cfg.pipeline.layer_4, cfg.objects, errs);

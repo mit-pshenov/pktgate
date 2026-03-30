@@ -38,6 +38,7 @@ enum filter_action {
     ACT_REDIRECT   = 3,
     ACT_TAG        = 4,
     ACT_RATE_LIMIT = 5,
+    ACT_USERSPACE  = 6,
 };
 
 /* ── Map key / value structures ────────────────────────────── */
@@ -179,7 +180,11 @@ enum stat_key {
     STAT_DROP_L3_V6_FRAGMENT = 35,   /* IPv6 fragment header detected, dropped */
     STAT_DROP_L4_V6_FRAGMENT = 36,   /* IPv6 fragment after ext headers in L4 */
 
-    STAT__MAX                = 37,
+    /* AF_XDP userspace redirect */
+    STAT_USERSPACE           = 37,   /* packet redirected to AF_XDP socket */
+    STAT_USERSPACE_FAIL      = 38,   /* bpf_redirect_map fallback (no socket) */
+
+    STAT__MAX                = 39,
 };
 
 #define MAX_STATS STAT__MAX

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "loader/map_registry.hpp"
+
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -25,25 +27,6 @@ public:
     /// Detach from interface and close all resources.
     void detach();
 
-    // Map FD accessors (generation-aware)
-    int mac_allow_fd(uint32_t gen) const;
-    int subnet_rules_fd(uint32_t gen) const;
-    int subnet6_rules_fd(uint32_t gen) const;
-    int vrf_rules_fd(uint32_t gen) const;
-    int l4_rules_fd(uint32_t gen) const;
-    int prog_array_fd(uint32_t gen) const;
-    int default_action_fd(uint32_t gen) const;
-    int gen_config_fd() const;
-    int rate_state_fd() const;
-    int stats_map_fd() const;
-
-    // Program FD accessors (for inserting into prog_array)
-    int entry_prog_fd() const;
-    int layer2_prog_fd() const;
-    int layer3_prog_fd() const;
-    int layer4_prog_fd() const;
-    int tc_ingress_prog_fd() const;
-
     /// Attach TC ingress program to the given interface.
     std::expected<void, std::string> attach_tc(const std::string& interface);
 
@@ -52,9 +35,13 @@ public:
 
     bool is_loaded() const { return loaded_; }
 
+    /// Access the FD registry (populated after load()).
+    const MapRegistry& registry() const { return registry_; }
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    MapRegistry registry_;
     bool loaded_ = false;
     bool attached_ = false;
     bool tc_attached_ = false;

@@ -277,6 +277,7 @@ TEST(test_parse_all_actions) {
     assert(parse_action("redirect") == Action::Redirect);
     assert(parse_action("tag") == Action::Tag);
     assert(parse_action("rate-limit") == Action::RateLimit);
+    assert(parse_action("userspace") == Action::Userspace);
 }
 
 TEST(test_parse_unknown_action_throws) {

@@ -113,6 +113,15 @@ static std::expected<Config, std::string> parse_json(const json& j) {
         if (j.contains("default_behavior"))
             cfg.default_behavior = parse_action(j["default_behavior"].get<std::string>());
 
+        if (j.contains("afxdp")) {
+            auto& ax = j["afxdp"];
+            cfg.afxdp.enabled    = ax.value("enabled", false);
+            cfg.afxdp.queues     = ax.value("queues", 0u);
+            cfg.afxdp.zero_copy  = ax.value("zero_copy", false);
+            cfg.afxdp.frame_size = ax.value("frame_size", 4096u);
+            cfg.afxdp.num_frames = ax.value("num_frames", 4096u);
+        }
+
         return cfg;
     } catch (const std::exception& e) {
         return std::unexpected(std::string("Parse error: ") + e.what());

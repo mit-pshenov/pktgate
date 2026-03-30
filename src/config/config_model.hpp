@@ -45,6 +45,7 @@ enum class Action {
     Redirect,
     Tag,
     RateLimit,
+    Userspace,
 };
 
 struct ActionParams {
@@ -76,12 +77,21 @@ struct Pipeline {
 
 /* ── Top-level config ──────────────────────────────────────── */
 
+struct AfXdpConfig {
+    bool     enabled    = false;
+    uint32_t queues     = 0;      // 0 = auto-detect
+    bool     zero_copy  = false;
+    uint32_t frame_size = 4096;
+    uint32_t num_frames = 4096;
+};
+
 struct Config {
-    std::string interface;
-    std::string capacity;
-    ObjectStore objects;
-    Pipeline    pipeline;
-    Action      default_behavior = Action::Drop;
+    std::string  interface;
+    std::string  capacity;
+    ObjectStore  objects;
+    Pipeline     pipeline;
+    Action       default_behavior = Action::Drop;
+    AfXdpConfig  afxdp;
 };
 
 /* ── Helpers ───────────────────────────────────────────────── */
@@ -93,6 +103,7 @@ inline Action parse_action(const std::string& s) {
     if (s == "redirect")   return Action::Redirect;
     if (s == "tag")        return Action::Tag;
     if (s == "rate-limit") return Action::RateLimit;
+    if (s == "userspace")  return Action::Userspace;
     throw std::invalid_argument("Unknown action: " + s);
 }
 

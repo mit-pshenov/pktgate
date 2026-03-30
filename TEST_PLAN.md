@@ -4,20 +4,20 @@
 
 | Категория | Файлов | Тестов | Привилегии | Время |
 |-----------|--------|--------|------------|-------|
-| C++ unit | 12 | ~320 | нет | ~5 с |
+| C++ unit | 14 | ~340 | нет | ~5 с |
 | C++ integration | 4 | ~66 | нет | ~3 с |
 | BPF dataplane | 1 | 23 | root/CAP_BPF | ~15 с |
 | Functional (pytest) | 13 | 104 | root | ~3 мин |
 | Fuzz | 3 | ∞ | нет | 60с–∞ |
 | Benchmark | 1 | — | нет | manual |
 
-**Итого**: 17 ctest-целей + 104 functional + 3 fuzz harness.
+**Итого**: 19 ctest-целей + 104 functional + 3 fuzz harness.
 
 ---
 
 ## 1. C++ Unit тесты (ctest -L unit)
 
-12 test binaries, все чисто userspace — ни BPF, ни root, ни сеть не нужны.
+14 test binaries, все чисто userspace — ни BPF, ни root, ни сеть не нужны.
 
 ```bash
 cmake -B build && cmake --build build -j$(nproc)
@@ -38,12 +38,15 @@ ctest --test-dir build -L unit --output-on-failure
 | 10 | ipv6 | tests/test_ipv6.cpp | IPv6Prefix, lpm_v6_key layout, dual-stack compilation |
 | 11 | fault_injection | tests/test_fault_injection.cpp | Truncation, bit flip, broken JSON, dangling refs |
 | 12 | prometheus | tests/test_prometheus.cpp | HTTP /metrics, concurrent scrapes, metric coverage |
+| 13 | map_registry | tests/test_map_registry.cpp | MapRegistry FD lookup: generational, shared, progs |
+| 14 | afxdp_config | tests/test_afxdp_config.cpp | AF_XDP config parse, validate, compile, round-trip |
 
 ### Нюансы
 
 - **prometheus** слушает на портах 19090-19095; если порты заняты — тесты провалятся.
 - **byte_layout** — критический тест: если struct layout изменился, BPF programs и CP рассинхронятся. Фейл здесь = нельзя деплоить.
 - **fault_injection** содержит 500+300 рандомных мутаций; seed зафиксирован, но тест может быть flaky при изменении порядка выполнения.
+- **afxdp_config** — чисто userspace: проверяет parse/validate/compile AF_XDP конфигурации, не требует AF_XDP сокетов или привилегий.
 
 ---
 
@@ -272,7 +275,7 @@ CI job `coverage` делает это автоматически и загруж
 
 ## 9. Чеклист перед релизом
 
-- [ ] `ctest -L unit` — все 12 бинарей проходят
+- [ ] `ctest -L unit` — все 14 бинарей проходят
 - [ ] `ctest -L integration` — все 4 бинаря проходят
 - [ ] `sudo ctest -L bpf` — BPF dataplane 23 теста
 - [ ] `sudo bash functional_tests/run.sh` — 104 functional теста

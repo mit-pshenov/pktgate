@@ -6,9 +6,8 @@
 
 namespace pktgate::pipeline {
 
-PipelineBuilder::PipelineBuilder(loader::BpfLoader& loader,
-                                 GenerationManager& gen_mgr)
-    : loader_(loader), gen_mgr_(gen_mgr) {}
+PipelineBuilder::PipelineBuilder(GenerationManager& gen_mgr)
+    : gen_mgr_(gen_mgr) {}
 
 std::expected<void, std::string>
 PipelineBuilder::deploy(const config::Config& cfg,

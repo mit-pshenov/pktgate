@@ -159,4 +159,13 @@ struct {
     __type(value, struct rate_state);
 } rate_state_map SEC(".maps");
 
+/* ── AF_XDP socket map (shared, not double-buffered) ──────── */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_XSKMAP);
+    __uint(max_entries, 64);  /* max RX queues */
+    __type(key, __u32);
+    __type(value, __u32);
+} xsks_map SEC(".maps");
+
 #endif /* FILTER_BPF_MAPS_H */

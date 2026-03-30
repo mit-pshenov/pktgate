@@ -1,6 +1,6 @@
 #pragma once
 
-#include "loader/bpf_loader.hpp"
+#include "loader/map_registry.hpp"
 #include "compiler/object_compiler.hpp"
 #include "compiler/rule_compiler.hpp"
 #include "config/config_model.hpp"
@@ -13,7 +13,7 @@ namespace pktgate::pipeline {
 
 class GenerationManager {
 public:
-    explicit GenerationManager(loader::BpfLoader& loader);
+    explicit GenerationManager(const loader::MapRegistry& registry);
 
     /// Prepare shadow generation with new config.
     /// Fills shadow maps with compiled rules and objects.
@@ -50,7 +50,7 @@ private:
         uint32_t gen, config::Action action);
 
     std::atomic<uint32_t> active_gen_{0};
-    loader::BpfLoader& loader_;
+    const loader::MapRegistry& registry_;
 
     // Track inserted LPM keys per generation for explicit deletion
     // (LPM_TRIE does not support iteration)

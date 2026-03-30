@@ -17,7 +17,23 @@
  * If no L4 rule matches, applies the default action from gen_default map.
  */
 
-static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
+/* Intercept XDP_PASS when L3 or L4 set ACT_USERSPACE flag —
+ * redirect to AF_XDP socket via xsks_map. Fallback to kernel stack
+ * if no socket bound (XDP_PASS as fallback action). */
+static __always_inline int maybe_redirect_xsk(struct xdp_md *ctx,
+                                               struct pkt_meta *meta,
+                                               int fallback)
+{
+    if (meta->action_flags & (1 << ACT_USERSPACE)) {
+        STAT_INC(STAT_USERSPACE);
+        return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, fallback);
+    }
+    return fallback;
+}
+
+static __always_inline int do_rate_limit(struct xdp_md *ctx,
+                                         struct pkt_meta *meta,
+                                         struct l4_rule *rule, __u32 pkt_len)
 {
     __u32 rid = rule->rule_id;
 
@@ -31,7 +47,7 @@ static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
         };
         bpf_map_update_elem(&rate_state_map, &rid, &init, BPF_ANY);
         STAT_INC(STAT_RATE_LIMIT_PASS);
-        return XDP_PASS;
+        return maybe_redirect_xsk(ctx, meta, XDP_PASS);
     }
 
     /* Refill tokens based on elapsed time */
@@ -68,7 +84,7 @@ static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
     if (rs->tokens >= pkt_len) {
         rs->tokens -= pkt_len;
         STAT_INC(STAT_RATE_LIMIT_PASS);
-        return XDP_PASS;
+        return maybe_redirect_xsk(ctx, meta, XDP_PASS);
     }
 
     /* Over limit — drop */
@@ -77,7 +93,8 @@ static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
     return XDP_DROP;
 }
 
-static __always_inline int get_default_action(struct pkt_meta *meta)
+static __always_inline int get_default_action(struct xdp_md *ctx,
+                                               struct pkt_meta *meta)
 {
     __u32 key = 0;
     __u32 *def = NULL;
@@ -92,7 +109,7 @@ static __always_inline int get_default_action(struct pkt_meta *meta)
         return XDP_DROP;
     }
     STAT_INC(STAT_PASS_L4);
-    return XDP_PASS;
+    return maybe_redirect_xsk(ctx, meta, XDP_PASS);
 }
 
 SEC("xdp")
@@ -206,7 +223,7 @@ int layer4_prog(struct xdp_md *ctx)
             STAT_INC(STAT_DROP_L4_NO_META);
             return XDP_DROP;
         }
-        return get_default_action(m);
+        return get_default_action(ctx, m);
     }
 
     /* Read metadata from data_meta area */
@@ -230,13 +247,13 @@ int layer4_prog(struct xdp_md *ctx)
         rule = bpf_map_lookup_elem(&l4_rules_1, &mkey);
 
     if (!rule)
-        return get_default_action(meta);
+        return get_default_action(ctx, meta);
 
     switch (rule->action) {
     case ACT_ALLOW:
         STAT_INC(STAT_PASS_L4);
         BPF_DBG("L4: rule %d proto=%d port=%d → ALLOW", rule->rule_id, proto, dst_port);
-        return XDP_PASS;
+        return maybe_redirect_xsk(ctx, meta, XDP_PASS);
 
     case ACT_DROP:
         STAT_INC(STAT_DROP_L4_RULE);
@@ -249,12 +266,17 @@ int layer4_prog(struct xdp_md *ctx)
         meta->cos  = rule->cos;
         STAT_INC(STAT_TAG);
         BPF_DBG("L4: rule %d → TAG dscp=%d", rule->rule_id, rule->dscp);
-        return XDP_PASS;
+        return maybe_redirect_xsk(ctx, meta, XDP_PASS);
 
     case ACT_RATE_LIMIT: {
         __u32 pkt_len = (__u32)(data_end - data);
-        return do_rate_limit(rule, pkt_len);
+        return do_rate_limit(ctx, meta, rule, pkt_len);
     }
+
+    case ACT_USERSPACE:
+        STAT_INC(STAT_USERSPACE);
+        BPF_DBG("L4: rule %d proto=%d port=%d → USERSPACE", rule->rule_id, proto, dst_port);
+        return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_PASS);
 
     default:
         STAT_INC(STAT_DROP_L4_RULE);

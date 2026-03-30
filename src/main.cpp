@@ -4,6 +4,7 @@
 #include "pipeline/pipeline_builder.hpp"
 #include "pipeline/stats_reader.hpp"
 #include "metrics/prometheus_exporter.hpp"
+#include "xdp/xdp_socket_manager.hpp"
 #include "util/log.hpp"
 #include "util/net_types.hpp"
 #include <csignal>
@@ -120,19 +121,23 @@ static bool file_is_nonempty(const char* path) {
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] <config.json>\n";
+        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] [--afxdp-queues N] <config.json>\n";
         return 1;
     }
 
     // Parse CLI flags
     int argi = 1;
     uint16_t metrics_port = 0;  // 0 = disabled
+    uint32_t afxdp_queues_override = 0;  // 0 = use config/auto-detect
     while (argi < argc && argv[argi][0] == '-') {
         std::string flag = argv[argi];
         if (flag == "--json")       pktgate::log::set_json(true);
         else if (flag == "--debug") pktgate::log::set_level(pktgate::log::Level::DEBUG);
         else if (flag == "--metrics-port" && argi + 1 < argc) {
             metrics_port = static_cast<uint16_t>(std::atoi(argv[++argi]));
+        }
+        else if (flag == "--afxdp-queues" && argi + 1 < argc) {
+            afxdp_queues_override = static_cast<uint32_t>(std::atoi(argv[++argi]));
         }
         else {
             std::cerr << "Unknown flag: " << flag << "\n";
@@ -141,7 +146,7 @@ int main(int argc, char* argv[]) {
         argi++;
     }
     if (argi >= argc) {
-        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] <config.json>\n";
+        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] [--afxdp-queues N] <config.json>\n";
         return 1;
     }
 
@@ -174,8 +179,8 @@ int main(int argc, char* argv[]) {
     }
 
     // Setup generation manager and deploy
-    pktgate::pipeline::GenerationManager gen_mgr(loader);
-    pktgate::pipeline::PipelineBuilder builder(loader, gen_mgr);
+    pktgate::pipeline::GenerationManager gen_mgr(loader.registry());
+    pktgate::pipeline::PipelineBuilder builder(gen_mgr);
 
     // Interface resolver — maps config names to system ifindex
     pktgate::compiler::IfindexResolver resolver = [](const std::string& name) -> uint32_t {
@@ -203,13 +208,32 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // AF_XDP userspace fast path
+    std::unique_ptr<pktgate::xdp::XdpSocketManager> xdp_mgr;
+    if (cfg.afxdp.enabled) {
+        uint32_t queues = afxdp_queues_override > 0 ? afxdp_queues_override : cfg.afxdp.queues;
+        xdp_mgr = std::make_unique<pktgate::xdp::XdpSocketManager>(loader.registry());
+        if (!xdp_mgr->init(cfg.interface, queues, cfg.afxdp.zero_copy,
+                           cfg.afxdp.frame_size, cfg.afxdp.num_frames)) {
+            LOG_ERR("AF_XDP init failed");
+            return 1;
+        }
+        if (!xdp_mgr->start([](const uint8_t* /*data*/, uint32_t len) {
+            LOG_DBG("AF_XDP: received %u bytes", len);
+        })) {
+            LOG_ERR("AF_XDP start failed");
+            return 1;
+        }
+        LOG_INF("AF_XDP userspace path active: %u queue(s)", xdp_mgr->socket_count());
+    }
+
     // Stats reader for runtime diagnostics
-    pktgate::pipeline::StatsReader stats_reader(loader);
+    pktgate::pipeline::StatsReader stats_reader(loader.registry());
 
     // Prometheus metrics exporter
     std::unique_ptr<pktgate::metrics::PrometheusExporter> exporter;
     if (metrics_port > 0) {
-        exporter = std::make_unique<pktgate::metrics::PrometheusExporter>(loader, metrics_port);
+        exporter = std::make_unique<pktgate::metrics::PrometheusExporter>(loader.registry(), metrics_port);
         if (exporter->start()) {
             LOG_INF("Prometheus metrics on :%u/metrics", metrics_port);
         } else {
@@ -273,6 +297,8 @@ int main(int argc, char* argv[]) {
     // Print final stats on shutdown
     LOG_INF("Shutting down...");
     stats_reader.print();
+    if (xdp_mgr)
+        xdp_mgr->stop();
     if (inotify_fd >= 0)
         close(inotify_fd);
     loader.detach_tc();
