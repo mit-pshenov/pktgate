@@ -5,6 +5,15 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ── Compiler hardening ───────────────────────────────────────
+add_compile_options(-Wall -Wextra)
+if(NOT COVERAGE AND NOT SANITIZER)
+    add_compile_options(
+        $<$<CONFIG:Release>:-fstack-protector-strong>
+        $<$<CONFIG:Release>:-D_FORTIFY_SOURCE=2>
+    )
+endif()
+
 # ── Find system dependencies ──────────────────────────────────
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED libbpf)
@@ -16,6 +25,21 @@ find_program(BPFTOOL bpftool PATHS /usr/sbin /usr/local/bin REQUIRED)
 
 # ── Options ───────────────────────────────────────────────────
 option(BPF_DEBUG "Enable bpf_printk debug tracing in BPF programs" OFF)
+
+# ── Auto-detect BPF target architecture ──────────────────────
+execute_process(
+    COMMAND uname -m
+    OUTPUT_VARIABLE HOST_ARCH OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(HOST_ARCH MATCHES "aarch64|arm64")
+    set(BPF_TARGET_ARCH "arm64")
+elseif(HOST_ARCH MATCHES "s390x")
+    set(BPF_TARGET_ARCH "s390")
+elseif(HOST_ARCH MATCHES "riscv64")
+    set(BPF_TARGET_ARCH "riscv")
+else()
+    set(BPF_TARGET_ARCH "x86")
+endif()
+message(STATUS "BPF target arch: ${BPF_TARGET_ARCH}")
 
 # ── BPF targets ───────────────────────────────────────────────
 set(BPF_SRC_DIR ${CMAKE_SOURCE_DIR}/bpf)
@@ -43,7 +67,7 @@ foreach(src ${BPF_SOURCES})
         COMMAND ${CLANG} -O2 -g -target bpf
             -I${BPF_SRC_DIR}
             -I/usr/include
-            -D__TARGET_ARCH_x86
+            -D__TARGET_ARCH_${BPF_TARGET_ARCH}
             $<$<BOOL:${BPF_DEBUG}>:-DBPF_DEBUG>
             -c ${BPF_SRC_DIR}/${src}
             -o ${obj}
@@ -269,6 +293,18 @@ add_test(NAME bpf_dataplane COMMAND test_bpf_dataplane)
 set_tests_properties(bpf_dataplane PROPERTIES
     LABELS "bpf;privileged"
     SKIP_RETURN_CODE 77
+)
+
+# ── Test labels for selective runs (ctest -L unit) ───────────
+set_tests_properties(
+    config_parser object_compiler generation_logic net_types
+    config_validation rule_compiler_edge config_validator
+    byte_layout packet_builder ipv6 fault_injection prometheus
+    PROPERTIES LABELS "unit"
+)
+set_tests_properties(
+    pipeline_integration roundtrip stress concurrency
+    PROPERTIES LABELS "integration"
 )
 
 # ── Benchmarks (not part of ctest, run manually) ─────────────
