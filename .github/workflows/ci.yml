@@ -29,7 +29,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 llvm-18 libbpf-dev bpftool \
+            clang-18 llvm-18 libbpf-dev \
+            linux-tools-common linux-tools-$(uname -r) \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
 
@@ -57,7 +58,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 llvm-18 libbpf-dev bpftool \
+            clang-18 llvm-18 libbpf-dev \
+            linux-tools-common linux-tools-$(uname -r) \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
 
