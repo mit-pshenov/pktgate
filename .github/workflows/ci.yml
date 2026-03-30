@@ -34,12 +34,18 @@ jobs:
           # Install bpftool: linux-tools-generic wrapper fails on Azure
           # runners, so we grab the real binary and put it on PATH directly.
           sudo apt-get install -y --no-install-recommends linux-tools-generic
-          REAL=$(find /usr/lib/linux-tools -maxdepth 2 -name bpftool -type f 2>/dev/null | head -1)
+          # The wrapper at /usr/sbin/bpftool fails on Azure kernels.
+          # Find the real binary and put it ahead of the wrapper in PATH.
+          ls -laR /usr/lib/linux-tools/ || true
+          REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
           if [ -n "$REAL" ]; then
             sudo cp "$REAL" /usr/local/bin/bpftool
             sudo chmod +x /usr/local/bin/bpftool
+          else
+            echo "::error::bpftool not found under /usr/lib/linux-tools"
+            exit 1
           fi
-          which bpftool && bpftool version
+          /usr/local/bin/bpftool version
 
       - name: Configure
         run: |
@@ -67,9 +73,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-18 llvm-18 libbpf-dev linux-tools-generic \
             libelf-dev zlib1g-dev nlohmann-json3-dev lcov
-          REAL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
-          [ -n "$REAL" ] && sudo ln -sf "$REAL" /usr/sbin/bpftool
-          bpftool version
+          REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
+          if [ -n "$REAL" ]; then
+            sudo cp "$REAL" /usr/local/bin/bpftool
+            sudo chmod +x /usr/local/bin/bpftool
+          fi
+          /usr/local/bin/bpftool version
 
       - name: Build with coverage
         run: |
