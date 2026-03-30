@@ -729,8 +729,12 @@ while (g_running) {
 | 12 | Systemd integration: service unit, install/uninstall scripts, cmake install | ✅ Завершена |
 | 13 | IPv6 dual-stack: lpm_v6_key, Ipv6Prefix parser, BPF L3/L4 v6 paths, 25 tests | ✅ Завершена |
 | 14 | RPM packaging: .spec, rpmbuild script, ctest in %check, systemd scriptlets | ✅ Завершена |
+| 15 | Functional tests: pytest+scapy, 84 теста через реальный XDP трафик на veth | ✅ Завершена |
+| 16 | Audit: IPv6 stats/fragments, reload race guard, CI/CD, README | ✅ Завершена |
+| 17 | Mirror/redirect e2e tests, fuzz CI (smoke + overnight), TEST_PLAN.md | ✅ Завершена |
 
-**Тесты: 387 total** (364 userspace + 23 BPF data plane).
+**Тесты: 500+ test points** (17 ctest targets + 104 functional + 3 fuzz harnesses).
+Полный тест-план: [TEST_PLAN.md](TEST_PLAN.md).
 
 ### Тестовые наборы
 
@@ -752,6 +756,38 @@ while (g_running) {
 | fault_injection | 13 | Truncation, byte flip, random mutation, edge-case inputs |
 | ipv6 | 52 | IPv6 prefix parsing, byte layout, rule compilation, dual-stack, config, validation |
 | bpf_dataplane | 23 | BPF_PROG_TEST_RUN (L2/L3/L4/pipeline/bench, requires sudo) |
+| prometheus | 7 | HTTP /metrics, concurrent scrapes, metric coverage |
+
+### Functional тесты (pytest + scapy, 104 теста)
+
+Реальный XDP трафик через veth-пары в network namespaces.
+Запуск: `sudo bash functional_tests/run.sh`
+
+| Файл | Тестов | Что проверяет |
+|------|--------|---------------|
+| test_l2_mac | 8 | MAC allow/deny, broadcast, spoofing |
+| test_l3_subnet | 15 | IPv4 subnet LPM, CIDR, multi-rule |
+| test_l3_ipv6 | 10 | IPv6 fragments, extension headers, L4 parsing |
+| test_l4_ports | 16 | TCP/UDP port match, port groups |
+| test_dscp_tag | 3 | DSCP EF rewrite в TC, TOS verification |
+| test_pipeline | 11 | Cross-layer interactions, default behavior |
+| test_malformed | 15 | Truncated/invalid packets |
+| test_zz_lifecycle | 4 | SIGTERM, SIGHUP, SIGUSR1, restart |
+| test_zz_reload | 3 | inotify reload, no downtime |
+| test_zz_gen_swap | 2 | Generation swap, double-buffer |
+| test_zz_config_edge | 5 | default:allow, many MACs, 50 port groups |
+| test_zz_rate_limit | 2 | Token bucket, burst drop rate |
+| test_zz_mirror_redirect | 10 | Mirror clone, redirect, IPv6, Prometheus metrics |
+
+### Fuzz harnesses (3 target, libFuzzer / standalone)
+
+| Target | Corpus | Что фаззит |
+|--------|--------|------------|
+| fuzz_config_parser | fuzz/corpus_config/ | JSON parser |
+| fuzz_net_types | fuzz/corpus_net/ | MAC/IP parsing |
+| fuzz_roundtrip | fuzz/corpus_roundtrip/ | parse → validate → compile |
+
+CI: `.github/workflows/fuzz.yml` — smoke (60с на PR) + overnight (cron, corpus caching).
 
 ### BPF data plane benchmarks (BPF_PROG_TEST_RUN, 1M packets)
 

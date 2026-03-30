@@ -110,20 +110,27 @@ A Grafana dashboard is in `grafana/`.
 
 ## Testing
 
-```bash
-# Unit tests (387 tests, 16 suites)
-ctest --test-dir build --output-on-failure
+500+ test points: 17 ctest targets + 104 functional tests + 3 fuzz harnesses.
+See [TEST_PLAN.md](TEST_PLAN.md) for the full test plan with caveats and pre-release checklist.
 
-# Selective: unit only / integration only
-ctest --test-dir build -L unit
-ctest --test-dir build -L integration
+```bash
+# C++ unit tests (12 targets)
+ctest --test-dir build -L unit --output-on-failure
+
+# C++ integration tests (4 targets)
+ctest --test-dir build -L integration --output-on-failure
 
 # BPF data plane tests (requires root)
 sudo ctest --test-dir build -L bpf
 
-# Functional tests — real packets via veth namespaces (requires root)
+# Functional tests — real XDP traffic via veth namespaces (requires root)
 pip install pytest scapy
 sudo bash functional_tests/run.sh
+
+# Fuzz testing (libFuzzer, requires clang-17+; GCC standalone also supported)
+CC=clang-18 CXX=clang++-18 cmake -B build -DFUZZ=ON
+cmake --build build --target fuzz_config_parser fuzz_net_types fuzz_roundtrip
+./build/fuzz_config_parser fuzz/corpus_config -max_total_time=300
 ```
 
 ## Performance

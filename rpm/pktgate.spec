@@ -92,4 +92,6 @@ fi
 %changelog
 * Mon Mar 30 2026 Filter Maintainers <noreply@example.com> - 1.0.0-1
 - Initial RPM release
-- Phases 1-13: full pipeline, 387 tests, IPv6, systemd, hot reload
+- Phases 1-17: full pipeline, 500+ tests (unit/integration/BPF/functional/fuzz)
+- IPv6 dual-stack, systemd, hot reload, mirror/redirect, Prometheus metrics
+- CI: fuzz smoke on PR, overnight fuzzing with corpus caching
