@@ -1,0 +1,61 @@
+{
+  "device_info": {
+    "interface": "veth-pktgate",
+    "capacity": "1Gbps"
+  },
+  "objects": {
+    "subnets": {
+      "client_net": "10.0.0.0/24",
+      "blocked_host": "10.0.0.99/32"
+    },
+    "mac_groups": {
+      "allowed_macs": ["9A:3E:22:A9:49:5C"]
+    },
+    "port_groups": {
+      "web_ports": [80, 443, 8080],
+      "dns_ports": [53]
+    }
+  },
+  "pipeline": {
+    "layer_2": [
+      {
+        "rule_id": 10,
+        "description": "Allow only known client MAC",
+        "match": { "src_mac": "object:allowed_macs" },
+        "action": "allow",
+        "next_layer": "layer_3"
+      }
+    ],
+    "layer_3": [
+      {
+        "rule_id": 100,
+        "description": "Block specific host",
+        "match": { "src_ip": "object:blocked_host" },
+        "action": "drop"
+      },
+      {
+        "rule_id": 110,
+        "description": "Allow client subnet, proceed to L4",
+        "match": { "src_ip": "object:client_net" },
+        "action": "allow",
+        "next_layer": "layer_4"
+      }
+    ],
+    "layer_4": [
+      {
+        "rule_id": 1000,
+        "description": "Allow web traffic",
+        "match": { "protocol": "TCP", "dst_port": "object:web_ports" },
+        "action": "allow"
+      },
+      {
+        "rule_id": 1001,
+        "description": "Tag DNS with EF DSCP",
+        "match": { "protocol": "UDP", "dst_port": "object:dns_ports" },
+        "action": "tag",
+        "action_params": { "dscp": "EF", "cos": 5 }
+      }
+    ]
+  },
+  "default_behavior": "drop"
+}

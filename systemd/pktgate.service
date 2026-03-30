@@ -1,0 +1,40 @@
+[Unit]
+Description=pktgate - eBPF XDP Packet Filter
+Documentation=file:///opt/pktgate/ARCHITECTURE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/pktgate/pktgate.conf
+ExecStart=/usr/local/bin/pktgate_ctl --json ${PKTGATE_EXTRA_ARGS} ${PKTGATE_CONFIG:-/etc/pktgate/config.json}
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Graceful shutdown — prints final stats before exit
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+# Restart policy
+Restart=on-failure
+RestartSec=3
+
+# Security hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/sys/fs/bpf
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# BPF requires these capabilities
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_PERFMON
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_PERFMON
+
+# Logging to journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pktgate_ctl
+
+[Install]
+WantedBy=multi-user.target

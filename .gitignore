@@ -1,0 +1,5 @@
+build/
+*.o
+*.a
+*.skel.h
+compile_commands.json
