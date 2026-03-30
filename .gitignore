@@ -3,3 +3,9 @@ build/
 *.a
 *.skel.h
 compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
