@@ -37,6 +37,24 @@ static __always_inline int get_default_action(struct pkt_meta *meta)
     return XDP_PASS;
 }
 
+static __always_inline int get_default_action_v6(struct pkt_meta *meta)
+{
+    __u32 key = 0;
+    __u32 *def = NULL;
+
+    if (meta->generation == 0)
+        def = bpf_map_lookup_elem(&default_action_0, &key);
+    else
+        def = bpf_map_lookup_elem(&default_action_1, &key);
+
+    if (!def || *def == ACT_DROP) {
+        STAT_INC(STAT_DROP_L3_V6_DEFAULT);
+        return XDP_DROP;
+    }
+    STAT_INC(STAT_PASS_L3_V6);
+    return XDP_PASS;
+}
+
 static __always_inline int handle_l3_action(struct xdp_md *ctx,
                                             struct pkt_meta *meta,
                                             struct l3_rule *rule)
@@ -93,6 +111,56 @@ static __always_inline int handle_l3_action(struct xdp_md *ctx,
     return XDP_PASS;
 }
 
+/* IPv6 variant — identical logic but uses v6-specific stat counters */
+static __always_inline int handle_l3_action_v6(struct xdp_md *ctx,
+                                               struct pkt_meta *meta,
+                                               struct l3_rule *rule)
+{
+    switch (rule->action) {
+    case ACT_ALLOW:
+        break;
+
+    case ACT_DROP:
+        STAT_INC(STAT_DROP_L3_V6_RULE);
+        BPF_DBG("L3v6: rule %d → DROP", rule->rule_id);
+        return XDP_DROP;
+
+    case ACT_REDIRECT:
+        if (rule->redirect_ifindex) {
+            STAT_INC(STAT_REDIRECT);
+            BPF_DBG("L3v6: rule %d → REDIRECT ifindex=%d", rule->rule_id, rule->redirect_ifindex);
+            return bpf_redirect(rule->redirect_ifindex, 0);
+        }
+        STAT_INC(STAT_DROP_L3_REDIRECT_FAIL);
+        BPF_DBG("L3v6: rule %d → REDIRECT with ifindex=0", rule->rule_id);
+        return XDP_DROP;
+
+    case ACT_MIRROR:
+        meta->action_flags |= (1 << ACT_MIRROR);
+        meta->mirror_ifindex = rule->mirror_ifindex;
+        STAT_INC(STAT_MIRROR);
+        BPF_DBG("L3v6: rule %d → MIRROR ifindex=%d", rule->rule_id, rule->mirror_ifindex);
+        break;
+
+    default:
+        STAT_INC(STAT_DROP_L3_V6_RULE);
+        return XDP_DROP;
+    }
+
+    if (rule->has_next_layer) {
+        if (meta->generation == 0)
+            bpf_tail_call(ctx, &prog_array_0, LAYER_4_IDX);
+        else
+            bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
+        STAT_INC(STAT_DROP_L3_TAIL);
+        BPF_DBG("L3v6: tail call to L4 failed, gen=%d", meta->generation);
+        return XDP_DROP;
+    }
+
+    STAT_INC(STAT_PASS_L3_V6);
+    return XDP_PASS;
+}
+
 SEC("xdp")
 int layer3_prog(struct xdp_md *ctx)
 {
@@ -124,6 +192,15 @@ int layer3_prog(struct xdp_md *ctx)
             return XDP_DROP;
         }
 
+        /* Drop IPv6 fragments — nexthdr 44 is the Fragment Header.
+         * Fragmented IPv6 packets lack reliable L4 headers beyond
+         * the first fragment, same rationale as IPv4 frag_off check. */
+        if (ip6h->nexthdr == 44) {
+            STAT_INC(STAT_DROP_L3_V6_FRAGMENT);
+            BPF_DBG("L3v6: fragment header detected, dropping");
+            return XDP_DROP;
+        }
+
         /* LPM trie lookup on IPv6 source address */
         struct lpm_v6_key lpm6_key = { .prefixlen = 128 };
         __builtin_memcpy(lpm6_key.addr, &ip6h->saddr, 16);
@@ -135,7 +212,7 @@ int layer3_prog(struct xdp_md *ctx)
             rule6 = bpf_map_lookup_elem(&subnet6_rules_1, &lpm6_key);
 
         if (rule6)
-            return handle_l3_action(ctx, meta, rule6);
+            return handle_l3_action_v6(ctx, meta, rule6);
 
         /* VRF fallback */
         struct vrf_key vkey6 = { .ifindex = ctx->ingress_ifindex };
@@ -146,7 +223,7 @@ int layer3_prog(struct xdp_md *ctx)
             vrule6 = bpf_map_lookup_elem(&vrf_rules_1, &vkey6);
 
         if (vrule6)
-            return handle_l3_action(ctx, meta, vrule6);
+            return handle_l3_action_v6(ctx, meta, vrule6);
 
         /* No match — try Layer 4, fall back to default */
         if (meta->generation == 0)
@@ -154,7 +231,7 @@ int layer3_prog(struct xdp_md *ctx)
         else
             bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
 
-        return get_default_action(meta);
+        return get_default_action_v6(meta);
     }
 
     /* ── IPv4 path ─────────────────────────────────────────── */

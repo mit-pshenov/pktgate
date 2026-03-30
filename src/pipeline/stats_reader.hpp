@@ -79,6 +79,12 @@ public:
             "  tc/tag:               %llu\n"
             "  tc/noop:              %llu\n"
             "\n"
+            "  --- IPv6 ---\n"
+            "  l3v6/pass:            %llu\n"
+            "  l3v6/rule_drop:       %llu\n"
+            "  l3v6/default_drop:    %llu\n"
+            "  l3v6/fragment:        %llu\n"
+            "\n"
             "  --- Additional ---\n"
             "  l3/fragment:          %llu\n"
             "  l4/not_ipv4:          %llu\n",
@@ -112,6 +118,10 @@ public:
             (unsigned long long)totals[STAT_TC_MIRROR_FAIL],
             (unsigned long long)totals[STAT_TC_TAG],
             (unsigned long long)totals[STAT_TC_NOOP],
+            (unsigned long long)totals[STAT_PASS_L3_V6],
+            (unsigned long long)totals[STAT_DROP_L3_V6_RULE],
+            (unsigned long long)totals[STAT_DROP_L3_V6_DEFAULT],
+            (unsigned long long)totals[STAT_DROP_L3_V6_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L3_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L4_NOT_IPV4]);
     }

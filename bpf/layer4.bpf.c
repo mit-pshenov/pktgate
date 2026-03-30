@@ -142,12 +142,43 @@ int layer4_prog(struct xdp_md *ctx)
         }
 
         /*
-         * Use nexthdr directly — extension header chasing
-         * is complex in BPF; for now handle TCP/UDP only
-         * when they are the immediate next header.
+         * Skip known IPv6 extension headers to find the transport
+         * header. Bounded loop (max 4) for BPF verifier safety.
+         * Skippable: Hop-by-Hop (0), Routing (43), Destination (60).
+         * Fragment (44) should have been dropped in L3; stop here
+         * defensively. Stop on TCP (6), UDP (17), or unknown.
          */
-        proto = ip6h->nexthdr;
-        l4 = (unsigned char *)(ip6h + 1);
+        unsigned char *cursor = (unsigned char *)(ip6h + 1);
+        __u8 nhdr = ip6h->nexthdr;
+
+        #pragma unroll
+        for (int i = 0; i < 4; i++) {
+            if (nhdr != 0 && nhdr != 43 && nhdr != 60)
+                break;
+            /* Extension header: byte 0 = next header, byte 1 = length in 8-octet units */
+            if (cursor + 2 > data_end) {
+                STAT_INC(STAT_DROP_L4_BOUNDS);
+                return XDP_DROP;
+            }
+            __u8 next = *cursor;
+            __u8 hlen = *(cursor + 1);
+            __u32 ext_len = ((__u32)hlen + 1) * 8;
+            cursor += ext_len;
+            if (cursor > data_end) {
+                STAT_INC(STAT_DROP_L4_BOUNDS);
+                return XDP_DROP;
+            }
+            nhdr = next;
+        }
+
+        /* Fragment header (44) — L3 should have dropped, but be defensive */
+        if (nhdr == 44) {
+            STAT_INC(STAT_DROP_L4_BOUNDS);
+            return XDP_DROP;
+        }
+
+        proto = nhdr;
+        l4 = cursor;
     } else {
         STAT_INC(STAT_DROP_L4_NOT_IPV4);
         return XDP_DROP;

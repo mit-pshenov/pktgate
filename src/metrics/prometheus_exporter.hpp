@@ -121,6 +121,8 @@ static constexpr MetricDesc kMetrics[] = {
      nullptr, "counter"},
     {STAT_DROP_L3_V6_DEFAULT,     "pktgate_drop_total{layer=\"l3v6\",reason=\"default\"}",
      nullptr, "counter"},
+    {STAT_DROP_L3_V6_FRAGMENT,    "pktgate_drop_total{layer=\"l3v6\",reason=\"fragment\"}",
+     nullptr, "counter"},
 };
 
 static constexpr size_t kNumMetrics = sizeof(kMetrics) / sizeof(kMetrics[0]);

@@ -176,8 +176,9 @@ enum stat_key {
     STAT_PASS_L3_V6          = 32,   /* IPv6 packet passed L3 */
     STAT_DROP_L3_V6_RULE     = 33,   /* explicit DROP action in L3 IPv6 rule */
     STAT_DROP_L3_V6_DEFAULT  = 34,   /* IPv6 default action = DROP */
+    STAT_DROP_L3_V6_FRAGMENT = 35,   /* IPv6 fragment header detected, dropped */
 
-    STAT__MAX                = 35,
+    STAT__MAX                = 36,
 };
 
 #define MAX_STATS STAT__MAX
