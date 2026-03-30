@@ -9,3 +9,25 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# Coverage
+*.gcda
+*.gcno
+coverage_html/
+coverage.info
+coverage_filtered.info
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+tags
+TAGS
+
+# Fuzz artifacts
+fuzz/corpus/
+fuzz/crash-*
+fuzz/leak-*
+fuzz/timeout-*
