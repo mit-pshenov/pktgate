@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/pktgate/pktgate.conf
-ExecStart=/usr/local/bin/pktgate_ctl --json ${PKTGATE_EXTRA_ARGS} ${PKTGATE_CONFIG:-/etc/pktgate/config.json}
+ExecStart=/bin/sh -c '/usr/local/bin/pktgate_ctl --json ${PKTGATE_METRICS_PORT:+--metrics-port $PKTGATE_METRICS_PORT} ${PKTGATE_EXTRA_ARGS} ${PKTGATE_CONFIG:-/etc/pktgate/config.json}'
 ExecReload=/bin/kill -HUP $MAINPID
 
 # Graceful shutdown — prints final stats before exit

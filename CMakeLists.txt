@@ -253,6 +253,10 @@ add_executable(test_fault_injection tests/test_fault_injection.cpp)
 target_link_libraries(test_fault_injection PRIVATE pktgate_lib)
 add_test(NAME fault_injection COMMAND test_fault_injection)
 
+add_executable(test_prometheus tests/test_prometheus.cpp)
+target_link_libraries(test_prometheus PRIVATE pktgate_lib pthread)
+add_test(NAME prometheus COMMAND test_prometheus)
+
 # ── BPF data plane tests (require CAP_BPF / sudo) ────────────
 add_executable(test_bpf_dataplane
     tests/bpf/test_bpf_dataplane.cpp

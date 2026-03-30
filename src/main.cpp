@@ -3,11 +3,13 @@
 #include "pipeline/generation_manager.hpp"
 #include "pipeline/pipeline_builder.hpp"
 #include "pipeline/stats_reader.hpp"
+#include "metrics/prometheus_exporter.hpp"
 #include "util/log.hpp"
 #include "util/net_types.hpp"
 #include <csignal>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <poll.h>
 #include <sys/inotify.h>
 #include <sys/stat.h>
@@ -108,16 +110,20 @@ static bool file_is_nonempty(const char* path) {
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: filter_ctl [--json] [--debug] <config.json>\n";
+        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] <config.json>\n";
         return 1;
     }
 
     // Parse CLI flags
     int argi = 1;
+    uint16_t metrics_port = 0;  // 0 = disabled
     while (argi < argc && argv[argi][0] == '-') {
         std::string flag = argv[argi];
         if (flag == "--json")       pktgate::log::set_json(true);
         else if (flag == "--debug") pktgate::log::set_level(pktgate::log::Level::DEBUG);
+        else if (flag == "--metrics-port" && argi + 1 < argc) {
+            metrics_port = static_cast<uint16_t>(std::atoi(argv[++argi]));
+        }
         else {
             std::cerr << "Unknown flag: " << flag << "\n";
             return 1;
@@ -125,7 +131,7 @@ int main(int argc, char* argv[]) {
         argi++;
     }
     if (argi >= argc) {
-        std::cerr << "Usage: filter_ctl [--json] [--debug] <config.json>\n";
+        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] <config.json>\n";
         return 1;
     }
 
@@ -189,6 +195,18 @@ int main(int argc, char* argv[]) {
 
     // Stats reader for runtime diagnostics
     pktgate::pipeline::StatsReader stats_reader(loader);
+
+    // Prometheus metrics exporter
+    std::unique_ptr<pktgate::metrics::PrometheusExporter> exporter;
+    if (metrics_port > 0) {
+        exporter = std::make_unique<pktgate::metrics::PrometheusExporter>(loader, metrics_port);
+        if (exporter->start()) {
+            LOG_INF("Prometheus metrics on :%u/metrics", metrics_port);
+        } else {
+            LOG_ERR("Failed to start metrics server on port %u", metrics_port);
+            exporter.reset();
+        }
+    }
 
     // Setup inotify for automatic config reload
     int inotify_fd = setup_inotify(config_path);
