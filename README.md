@@ -119,6 +119,7 @@ ctest --test-dir build -L integration
 sudo ctest --test-dir build -L bpf
 
 # Functional tests — real packets via veth namespaces (requires root)
+pip install pytest scapy
 sudo bash functional_tests/run.sh
 ```
 
