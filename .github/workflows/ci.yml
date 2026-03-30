@@ -30,9 +30,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             clang-18 llvm-18 libbpf-dev \
-            linux-tools-common linux-tools-$(uname -r) \
+            linux-tools-generic \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
+          # bpftool from linux-tools-generic may not match running kernel;
+          # ensure it's on PATH regardless of kernel version
+          BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | head -1)
+          if [ -n "$BPFTOOL" ] && ! command -v bpftool &>/dev/null; then
+            sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+          fi
 
       - name: Configure
         run: |
@@ -59,9 +65,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             clang-18 llvm-18 libbpf-dev \
-            linux-tools-common linux-tools-$(uname -r) \
+            linux-tools-generic \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
+          # bpftool from linux-tools-generic may not match running kernel;
+          # ensure it's on PATH regardless of kernel version
+          BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | head -1)
+          if [ -n "$BPFTOOL" ] && ! command -v bpftool &>/dev/null; then
+            sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+          fi
 
       - name: Build with coverage
         run: |
