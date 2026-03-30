@@ -33,11 +33,12 @@ jobs:
             linux-tools-generic \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
-          # The bpftool wrapper script checks kernel version and fails on
-          # Azure runners. Symlink the real binary directly.
+          # The /usr/sbin/bpftool wrapper checks kernel version and fails on
+          # Azure runners (kernel 6.17-azure has no matching tools package).
+          # Replace the wrapper with a symlink to the real binary.
           REAL_BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
           if [ -n "$REAL_BPFTOOL" ]; then
-            sudo ln -sf "$REAL_BPFTOOL" /usr/local/sbin/bpftool
+            sudo ln -sf "$REAL_BPFTOOL" /usr/sbin/bpftool
           fi
           bpftool version
 
@@ -69,11 +70,12 @@ jobs:
             linux-tools-generic \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
-          # The bpftool wrapper script checks kernel version and fails on
-          # Azure runners. Symlink the real binary directly.
+          # The /usr/sbin/bpftool wrapper checks kernel version and fails on
+          # Azure runners (kernel 6.17-azure has no matching tools package).
+          # Replace the wrapper with a symlink to the real binary.
           REAL_BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
           if [ -n "$REAL_BPFTOOL" ]; then
-            sudo ln -sf "$REAL_BPFTOOL" /usr/local/sbin/bpftool
+            sudo ln -sf "$REAL_BPFTOOL" /usr/sbin/bpftool
           fi
           bpftool version
 
