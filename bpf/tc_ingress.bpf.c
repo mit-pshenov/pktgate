@@ -55,16 +55,26 @@ int tc_ingress_prog(struct __sk_buff *skb)
         return TC_ACT_OK;
     }
 
+    /*
+     * Cache metadata fields in local variables BEFORE calling any skb helper.
+     * Helpers that take struct __sk_buff * (bpf_clone_redirect, bpf_skb_load_bytes)
+     * cause the verifier to invalidate all packet/data_meta pointers, because the
+     * packet buffer may be reallocated.  Reading from meta after such a call would
+     * fail verification with "R7 invalid mem access 'scalar'".
+     */
+    __u32 mirror_ifindex = meta->mirror_ifindex;
+    __u8  dscp           = meta->dscp;
+
     /* ── Mirror: clone packet to mirror_ifindex ─────────────── */
     if (flags & (1 << ACT_MIRROR)) {
-        if (meta->mirror_ifindex) {
-            long ret = bpf_clone_redirect(skb, meta->mirror_ifindex, 0);
+        if (mirror_ifindex) {
+            long ret = bpf_clone_redirect(skb, mirror_ifindex, 0);
             if (ret == 0) {
                 STAT_INC(STAT_TC_MIRROR);
-                BPF_DBG("TC: mirror to ifindex=%d OK", meta->mirror_ifindex);
+                BPF_DBG("TC: mirror to ifindex=%d OK", mirror_ifindex);
             } else {
                 STAT_INC(STAT_TC_MIRROR_FAIL);
-                BPF_DBG("TC: mirror to ifindex=%d FAILED ret=%ld", meta->mirror_ifindex, ret);
+                BPF_DBG("TC: mirror to ifindex=%d FAILED ret=%ld", mirror_ifindex, ret);
             }
         }
     }
@@ -75,9 +85,19 @@ int tc_ingress_prog(struct __sk_buff *skb)
         __u8 old_tos;
         if (bpf_skb_load_bytes(skb, 14 + 1, &old_tos, 1) == 0) {
             /* DSCP occupies bits 7:2, ECN occupies bits 1:0 */
-            __u8 new_tos = (meta->dscp << 2) | (old_tos & 0x03);
+            __u8 new_tos = (dscp << 2) | (old_tos & 0x03);
             if (new_tos != old_tos) {
-                bpf_skb_store_bytes(skb, 14 + 1, &new_tos, 1, BPF_F_RECOMPUTE_CSUM);
+                bpf_skb_store_bytes(skb, 14 + 1, &new_tos, 1, 0);
+                /*
+                 * Fix up IP header checksum after TOS modification.
+                 * bpf_skb_store_bytes with BPF_F_RECOMPUTE_CSUM only updates
+                 * skb->csum (L4), NOT the IP header checksum field itself.
+                 * Use bpf_l3_csum_replace to do an incremental L3 checksum update.
+                 * IP checksum is at offset 10 in the IP header (= byte 24 from frame start).
+                 */
+                bpf_l3_csum_replace(skb, 14 + 10,
+                                    bpf_htons((__u16)old_tos),
+                                    bpf_htons((__u16)new_tos), 2);
                 STAT_INC(STAT_TC_TAG);
                 BPF_DBG("TC: DSCP rewrite old_tos=0x%x new_tos=0x%x", old_tos, new_tos);
             }
