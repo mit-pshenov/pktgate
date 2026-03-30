@@ -33,12 +33,13 @@ jobs:
             linux-tools-generic \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
-          # bpftool from linux-tools-generic may not match running kernel;
-          # ensure it's on PATH regardless of kernel version
-          BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | head -1)
-          if [ -n "$BPFTOOL" ] && ! command -v bpftool &>/dev/null; then
-            sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+          # The bpftool wrapper script checks kernel version and fails on
+          # Azure runners. Symlink the real binary directly.
+          REAL_BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
+          if [ -n "$REAL_BPFTOOL" ]; then
+            sudo ln -sf "$REAL_BPFTOOL" /usr/local/sbin/bpftool
           fi
+          bpftool version
 
       - name: Configure
         run: |
@@ -68,12 +69,13 @@ jobs:
             linux-tools-generic \
             linux-headers-$(uname -r) libelf-dev zlib1g-dev \
             nlohmann-json3-dev lcov
-          # bpftool from linux-tools-generic may not match running kernel;
-          # ensure it's on PATH regardless of kernel version
-          BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | head -1)
-          if [ -n "$BPFTOOL" ] && ! command -v bpftool &>/dev/null; then
-            sudo ln -sf "$BPFTOOL" /usr/local/bin/bpftool
+          # The bpftool wrapper script checks kernel version and fails on
+          # Azure runners. Symlink the real binary directly.
+          REAL_BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
+          if [ -n "$REAL_BPFTOOL" ]; then
+            sudo ln -sf "$REAL_BPFTOOL" /usr/local/sbin/bpftool
           fi
+          bpftool version
 
       - name: Build with coverage
         run: |
