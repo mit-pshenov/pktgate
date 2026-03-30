@@ -24,8 +24,19 @@ ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/sys/fs/bpf
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+
+# Resource limits — BPF maps require locked memory
+LimitMEMLOCK=unlimited
 
 # BPF requires these capabilities
 AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_PERFMON
