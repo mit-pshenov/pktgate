@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build_type: Debug
+            sanitizer: ""
+          - build_type: Debug
+            sanitizer: asan
+          - build_type: Debug
+            sanitizer: ubsan
+          - build_type: Release
+            sanitizer: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libbpf-dev bpftool \
+            linux-headers-$(uname -r) libelf-dev zlib1g-dev \
+            nlohmann-json3-dev lcov
+
+      - name: Configure
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            ${{ matrix.sanitizer && format('-DSANITIZER={0}', matrix.sanitizer) || '' }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Unit tests
+        run: ctest --test-dir build -L unit --output-on-failure
+
+      - name: Integration tests
+        run: ctest --test-dir build -L integration --output-on-failure
+
+  coverage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libbpf-dev bpftool \
+            linux-headers-$(uname -r) libelf-dev zlib1g-dev \
+            nlohmann-json3-dev lcov
+
+      - name: Build with coverage
+        run: |
+          cmake -B build -DCOVERAGE=ON
+          cmake --build build -j$(nproc)
+
+      - name: Run tests
+        run: ctest --test-dir build -E bpf_dataplane --output-on-failure
+
+      - name: Generate coverage report
+        run: make -C build coverage
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: build/coverage_html/
