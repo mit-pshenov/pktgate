@@ -36,7 +36,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends linux-tools-generic
           # The wrapper at /usr/sbin/bpftool fails on Azure kernels.
           # Find the real binary and put it ahead of the wrapper in PATH.
-          ls -laR /usr/lib/linux-tools/ || true
           REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
           if [ -n "$REAL" ]; then
             sudo cp "$REAL" /usr/local/bin/bpftool
