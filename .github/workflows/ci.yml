@@ -29,17 +29,12 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 llvm-18 libbpf-dev \
-            linux-tools-generic \
-            linux-headers-$(uname -r) libelf-dev zlib1g-dev \
-            nlohmann-json3-dev lcov
-          # The /usr/sbin/bpftool wrapper checks kernel version and fails on
-          # Azure runners (kernel 6.17-azure has no matching tools package).
-          # Replace the wrapper with a symlink to the real binary.
-          REAL_BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
-          if [ -n "$REAL_BPFTOOL" ]; then
-            sudo ln -sf "$REAL_BPFTOOL" /usr/sbin/bpftool
-          fi
+            clang-18 llvm-18 libbpf-dev linux-tools-generic \
+            libelf-dev zlib1g-dev nlohmann-json3-dev lcov
+          # The /usr/sbin/bpftool wrapper checks kernel version and fails
+          # on Azure runners. Replace with the real binary.
+          REAL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
+          [ -n "$REAL" ] && sudo ln -sf "$REAL" /usr/sbin/bpftool
           bpftool version
 
       - name: Configure
@@ -66,17 +61,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 llvm-18 libbpf-dev \
-            linux-tools-generic \
-            linux-headers-$(uname -r) libelf-dev zlib1g-dev \
-            nlohmann-json3-dev lcov
-          # The /usr/sbin/bpftool wrapper checks kernel version and fails on
-          # Azure runners (kernel 6.17-azure has no matching tools package).
-          # Replace the wrapper with a symlink to the real binary.
-          REAL_BPFTOOL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
-          if [ -n "$REAL_BPFTOOL" ]; then
-            sudo ln -sf "$REAL_BPFTOOL" /usr/sbin/bpftool
-          fi
+            clang-18 llvm-18 libbpf-dev linux-tools-generic \
+            libelf-dev zlib1g-dev nlohmann-json3-dev lcov
+          REAL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
+          [ -n "$REAL" ] && sudo ln -sf "$REAL" /usr/sbin/bpftool
           bpftool version
 
       - name: Build with coverage
