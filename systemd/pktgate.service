@@ -19,6 +19,7 @@ Restart=on-failure
 RestartSec=3
 
 # Security hardening
+# NoNewPrivileges must be 'no' — AmbientCapabilities require privilege transition
 NoNewPrivileges=no
 ProtectSystem=strict
 ProtectHome=yes

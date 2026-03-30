@@ -82,7 +82,10 @@ JSON config defines objects (MACs, subnets, port groups) and a layered pipeline:
   },
   "pipeline": {
     "layer_2": [{ "rule_id": 10, "match": {"src_mac": "object:routers"}, "action": "allow", "next_layer": "layer_3" }],
-    "layer_3": [{ "rule_id": 100, "match": {"src_ip": "object:trusted"}, "action": "allow", "next_layer": "layer_4" }],
+    "layer_3": [
+      { "rule_id": 100, "match": {"src_ip": "object:trusted"}, "action": "allow", "next_layer": "layer_4" },
+      { "rule_id": 101, "match": {"src_ip6": "object6:trusted_v6"}, "action": "allow", "next_layer": "layer_4" }
+    ],
     "layer_4": [{ "rule_id": 1000, "match": {"protocol": "TCP", "dst_port": "object:web"}, "action": "allow" }]
   },
   "default_behavior": "drop"

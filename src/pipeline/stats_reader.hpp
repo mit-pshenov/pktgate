@@ -84,6 +84,7 @@ public:
             "  l3v6/rule_drop:       %llu\n"
             "  l3v6/default_drop:    %llu\n"
             "  l3v6/fragment:        %llu\n"
+            "  l4/v6_fragment:       %llu\n"
             "\n"
             "  --- Additional ---\n"
             "  l3/fragment:          %llu\n"
@@ -122,6 +123,7 @@ public:
             (unsigned long long)totals[STAT_DROP_L3_V6_RULE],
             (unsigned long long)totals[STAT_DROP_L3_V6_DEFAULT],
             (unsigned long long)totals[STAT_DROP_L3_V6_FRAGMENT],
+            (unsigned long long)totals[STAT_DROP_L4_V6_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L3_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L4_NOT_IPV4]);
     }

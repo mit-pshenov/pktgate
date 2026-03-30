@@ -173,7 +173,7 @@ int layer4_prog(struct xdp_md *ctx)
 
         /* Fragment header (44) — L3 should have dropped, but be defensive */
         if (nhdr == 44) {
-            STAT_INC(STAT_DROP_L4_BOUNDS);
+            STAT_INC(STAT_DROP_L4_V6_FRAGMENT);
             return XDP_DROP;
         }
 

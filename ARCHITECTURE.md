@@ -173,13 +173,13 @@ drop/allow/redirect — используется чистый XDP. Если ес
 │ default_action_0/1     │ ARRAY(1)             │ 0 → __u32 (filter_action)    │
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
 │ rate_state_map         │ PERCPU_HASH(4096)    │ rule_id → rate_state         │
-│ stats_map              │ PERCPU_ARRAY(32)     │ stat_key → __u64 (counter)   │
+│ stats_map              │ PERCPU_ARRAY(37)     │ stat_key → __u64 (counter)   │
 └────────────────────────┴──────────────────────┴──────────────────────────────┘
 
 Итого: 15 maps (2 shared + 6×2 double-buffered + 1 rate_state).
 Maps _0/_1 — двойная буферизация для generation swap.
 rate_state_map и stats_map общие (не буферизируются).
-stats_map — 32 per-CPU счётчика: entry/L2/L3/L4 drops, pass/actions, TC mirror/tag, fragment/proto drops (см. секцию 8).
+stats_map — 37 per-CPU счётчиков: entry/L2/L3/L4 drops, pass/actions, TC mirror/tag, IPv6 L3/L4, fragment/proto drops (см. секцию 8).
 ```
 
 **`pkt_meta`** — передаётся через XDP `data_meta` area (не через BPF map):
@@ -583,7 +583,14 @@ enum stat_key {
     STAT_DROP_L3_FRAGMENT    = 30,   // IP fragment (non-first) dropped
     STAT_DROP_L4_NOT_IPV4    = 31,   // non-IPv4 reached L4
 
-    STAT__MAX                = 32,
+    // IPv6
+    STAT_PASS_L3_V6          = 32,   // IPv6 packet passed L3
+    STAT_DROP_L3_V6_RULE     = 33,   // explicit DROP in L3 IPv6 rule
+    STAT_DROP_L3_V6_DEFAULT  = 34,   // IPv6 default action = DROP
+    STAT_DROP_L3_V6_FRAGMENT = 35,   // IPv6 fragment header at L3
+    STAT_DROP_L4_V6_FRAGMENT = 36,   // IPv6 fragment after ext headers in L4
+
+    STAT__MAX                = 37,
 };
 ```
 

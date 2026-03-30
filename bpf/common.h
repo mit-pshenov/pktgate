@@ -177,8 +177,9 @@ enum stat_key {
     STAT_DROP_L3_V6_RULE     = 33,   /* explicit DROP action in L3 IPv6 rule */
     STAT_DROP_L3_V6_DEFAULT  = 34,   /* IPv6 default action = DROP */
     STAT_DROP_L3_V6_FRAGMENT = 35,   /* IPv6 fragment header detected, dropped */
+    STAT_DROP_L4_V6_FRAGMENT = 36,   /* IPv6 fragment after ext headers in L4 */
 
-    STAT__MAX                = 36,
+    STAT__MAX                = 37,
 };
 
 #define MAX_STATS STAT__MAX

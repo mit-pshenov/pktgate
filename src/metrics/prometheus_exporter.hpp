@@ -123,7 +123,12 @@ static constexpr MetricDesc kMetrics[] = {
      nullptr, "counter"},
     {STAT_DROP_L3_V6_FRAGMENT,    "pktgate_drop_total{layer=\"l3v6\",reason=\"fragment\"}",
      nullptr, "counter"},
+    {STAT_DROP_L4_V6_FRAGMENT,    "pktgate_drop_total{layer=\"l4\",reason=\"v6_fragment\"}",
+     nullptr, "counter"},
 };
+
+static_assert(sizeof(kMetrics) / sizeof(kMetrics[0]) == STAT__MAX,
+              "kMetrics must cover every stat_key — update after adding new counters");
 
 static constexpr size_t kNumMetrics = sizeof(kMetrics) / sizeof(kMetrics[0]);
 
