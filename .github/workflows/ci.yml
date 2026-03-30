@@ -29,13 +29,17 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 llvm-18 libbpf-dev linux-tools-generic \
+            clang-18 llvm-18 libbpf-dev \
             libelf-dev zlib1g-dev nlohmann-json3-dev lcov
-          # The /usr/sbin/bpftool wrapper checks kernel version and fails
-          # on Azure runners. Replace with the real binary.
-          REAL=$(find /usr/lib/linux-tools -name bpftool -type f 2>/dev/null | sort -V | tail -1)
-          [ -n "$REAL" ] && sudo ln -sf "$REAL" /usr/sbin/bpftool
-          bpftool version
+          # Install bpftool: linux-tools-generic wrapper fails on Azure
+          # runners, so we grab the real binary and put it on PATH directly.
+          sudo apt-get install -y --no-install-recommends linux-tools-generic
+          REAL=$(find /usr/lib/linux-tools -maxdepth 2 -name bpftool -type f 2>/dev/null | head -1)
+          if [ -n "$REAL" ]; then
+            sudo cp "$REAL" /usr/local/bin/bpftool
+            sudo chmod +x /usr/local/bin/bpftool
+          fi
+          which bpftool && bpftool version
 
       - name: Configure
         run: |
