@@ -1,0 +1,173 @@
+name: Fuzz
+
+on:
+  schedule:
+    # Weeknights at 02:00 UTC
+    - cron: "0 2 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Total fuzz time per harness (seconds)"
+        required: false
+        default: "3600"
+  pull_request:
+    branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ------------------------------------------------------------------
+  # Short smoke run on every PR (~60s per harness)
+  # ------------------------------------------------------------------
+  fuzz-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libbpf-dev \
+            libelf-dev zlib1g-dev nlohmann-json3-dev
+          sudo apt-get install -y --no-install-recommends linux-tools-generic
+          REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
+          if [ -n "$REAL" ]; then
+            sudo cp "$REAL" /usr/local/bin/bpftool
+            sudo chmod +x /usr/local/bin/bpftool
+          fi
+
+      - name: Build fuzz targets
+        run: |
+          CC=clang-18 CXX=clang++-18 cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug -DFUZZ=ON
+          cmake --build build -j$(nproc) \
+            --target fuzz_config_parser fuzz_net_types fuzz_roundtrip
+
+      - name: Smoke fuzz (60s each)
+        run: |
+          for target in fuzz_config_parser fuzz_net_types fuzz_roundtrip; do
+            corpus_dir="fuzz/corpus_${target#fuzz_}"
+            echo "=== $target (60s) ==="
+            ./build/$target "$corpus_dir" \
+              -max_total_time=60 \
+              -print_final_stats=1 \
+              || { echo "::error::$target found a crash"; exit 1; }
+          done
+
+  # ------------------------------------------------------------------
+  # Overnight campaign (schedule / manual dispatch)
+  # ------------------------------------------------------------------
+  fuzz-overnight:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: fuzz_config_parser
+            corpus: corpus_config
+          - name: fuzz_net_types
+            corpus: corpus_net
+          - name: fuzz_roundtrip
+            corpus: corpus_roundtrip
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libbpf-dev \
+            libelf-dev zlib1g-dev nlohmann-json3-dev
+          sudo apt-get install -y --no-install-recommends linux-tools-generic
+          REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
+          if [ -n "$REAL" ]; then
+            sudo cp "$REAL" /usr/local/bin/bpftool
+            sudo chmod +x /usr/local/bin/bpftool
+          fi
+
+      - name: Build fuzz target
+        run: |
+          CC=clang-18 CXX=clang++-18 cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug -DFUZZ=ON
+          cmake --build build -j$(nproc) \
+            --target ${{ matrix.target.name }}
+
+      - name: Restore corpus cache
+        uses: actions/cache/restore@v4
+        with:
+          path: cached_corpus
+          key: fuzz-${{ matrix.target.name }}-
+
+      - name: Merge and run fuzzer
+        run: |
+          DURATION="${{ github.event.inputs.duration || '3600' }}"
+          SEED_DIR="fuzz/${{ matrix.target.corpus }}"
+          WORK_DIR="work_corpus"
+          mkdir -p "$WORK_DIR" cached_corpus
+
+          # Merge seed + cached corpus into working directory
+          if [ -n "$(ls -A cached_corpus 2>/dev/null)" ]; then
+            ./build/${{ matrix.target.name }} -merge=1 \
+              "$WORK_DIR" "$SEED_DIR" cached_corpus 2>/dev/null || true
+          else
+            cp "$SEED_DIR"/* "$WORK_DIR"/ 2>/dev/null || true
+          fi
+
+          echo "=== Running ${{ matrix.target.name }} for ${DURATION}s ==="
+          ./build/${{ matrix.target.name }} "$WORK_DIR" \
+            -max_total_time="$DURATION" \
+            -print_final_stats=1 \
+            -artifact_prefix=crash_ \
+            2>&1 | tee fuzz_output.log
+
+          # Update cached corpus with new findings
+          rm -rf cached_corpus
+          mkdir cached_corpus
+          ./build/${{ matrix.target.name }} -merge=1 \
+            cached_corpus "$WORK_DIR" 2>/dev/null || true
+
+      - name: Save corpus cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: cached_corpus
+          key: fuzz-${{ matrix.target.name }}-${{ github.run_number }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: crashes-${{ matrix.target.name }}
+          path: crash_*
+
+      - name: Create issue on crash
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CRASHES=$(ls crash_* 2>/dev/null | head -5)
+          if [ -n "$CRASHES" ]; then
+            gh issue create \
+              --title "Fuzz crash in ${{ matrix.target.name }}" \
+              --body "$(cat <<EOF
+          ## Fuzz crash detected
+
+          **Target**: \`${{ matrix.target.name }}\`
+          **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          **Duration**: ${{ github.event.inputs.duration || '3600' }}s
+
+          Crash artifacts uploaded — download from the Actions run above.
+
+          \`\`\`
+          $(tail -20 fuzz_output.log)
+          \`\`\`
+          EOF
+          )"
+          fi
