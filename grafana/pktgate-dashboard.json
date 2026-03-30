@@ -1,0 +1,263 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "pktgate-overview",
+    "title": "pktgate — XDP Packet Filter",
+    "tags": ["pktgate", "ebpf", "xdp"],
+    "timezone": "browser",
+    "refresh": "5s",
+    "time": { "from": "now-15m", "to": "now" },
+    "panels": [
+      {
+        "id": 1,
+        "type": "stat",
+        "title": "Packets / sec",
+        "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+        "targets": [{
+          "expr": "rate(pktgate_packets_total[1m])",
+          "legendFormat": "pps"
+        }],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "pps",
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 1000000 },
+                { "color": "red", "value": 10000000 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "type": "stat",
+        "title": "Total Packets",
+        "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+        "targets": [{
+          "expr": "pktgate_packets_total",
+          "legendFormat": "total"
+        }],
+        "fieldConfig": {
+          "defaults": { "unit": "short" }
+        }
+      },
+      {
+        "id": 3,
+        "type": "stat",
+        "title": "Drop Rate",
+        "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+        "targets": [{
+          "expr": "sum(rate(pktgate_drop_total[1m])) / rate(pktgate_packets_total[1m]) * 100",
+          "legendFormat": "drop %"
+        }],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "thresholds": {
+              "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 5 },
+                { "color": "red", "value": 25 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 4,
+        "type": "stat",
+        "title": "Actions / sec",
+        "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+        "targets": [{
+          "expr": "sum(rate(pktgate_action_total[1m]))",
+          "legendFormat": "actions/s"
+        }],
+        "fieldConfig": {
+          "defaults": { "unit": "ops" }
+        }
+      },
+      {
+        "id": 10,
+        "type": "timeseries",
+        "title": "Packet Rate (pps)",
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
+        "targets": [
+          {
+            "expr": "rate(pktgate_packets_total[30s])",
+            "legendFormat": "total pps"
+          },
+          {
+            "expr": "sum(rate(pktgate_pass_total[30s]))",
+            "legendFormat": "pass"
+          },
+          {
+            "expr": "sum(rate(pktgate_drop_total[30s]))",
+            "legendFormat": "drop"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "pps",
+            "custom": { "fillOpacity": 10, "lineWidth": 2 }
+          }
+        }
+      },
+      {
+        "id": 20,
+        "type": "timeseries",
+        "title": "Drops by Layer",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+        "targets": [
+          {
+            "expr": "rate(pktgate_drop_total{layer=\"entry\"}[30s])",
+            "legendFormat": "entry: {{reason}}"
+          },
+          {
+            "expr": "rate(pktgate_drop_total{layer=\"l2\"}[30s])",
+            "legendFormat": "L2: {{reason}}"
+          },
+          {
+            "expr": "rate(pktgate_drop_total{layer=\"l3\"}[30s])",
+            "legendFormat": "L3: {{reason}}"
+          },
+          {
+            "expr": "rate(pktgate_drop_total{layer=\"l4\"}[30s])",
+            "legendFormat": "L4: {{reason}}"
+          },
+          {
+            "expr": "rate(pktgate_drop_total{layer=\"l3v6\"}[30s])",
+            "legendFormat": "L3v6: {{reason}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "pps",
+            "custom": { "fillOpacity": 15, "stacking": { "mode": "normal" } }
+          }
+        }
+      },
+      {
+        "id": 21,
+        "type": "timeseries",
+        "title": "Actions",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+        "targets": [
+          {
+            "expr": "rate(pktgate_action_total{action=\"redirect\"}[30s])",
+            "legendFormat": "redirect"
+          },
+          {
+            "expr": "rate(pktgate_action_total{action=\"mirror\"}[30s])",
+            "legendFormat": "mirror"
+          },
+          {
+            "expr": "rate(pktgate_action_total{action=\"tag\"}[30s])",
+            "legendFormat": "tag"
+          },
+          {
+            "expr": "rate(pktgate_action_total{action=\"rate_limit_pass\"}[30s])",
+            "legendFormat": "rate_limit_pass"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "pps",
+            "custom": { "fillOpacity": 15 }
+          }
+        }
+      },
+      {
+        "id": 30,
+        "type": "timeseries",
+        "title": "TC Ingress",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+        "targets": [
+          {
+            "expr": "rate(pktgate_tc_total{action=\"mirror\"}[30s])",
+            "legendFormat": "tc mirror"
+          },
+          {
+            "expr": "rate(pktgate_tc_total{action=\"mirror_fail\"}[30s])",
+            "legendFormat": "tc mirror_fail"
+          },
+          {
+            "expr": "rate(pktgate_tc_total{action=\"tag\"}[30s])",
+            "legendFormat": "tc tag"
+          },
+          {
+            "expr": "rate(pktgate_tc_total{action=\"noop\"}[30s])",
+            "legendFormat": "tc noop"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "pps",
+            "custom": { "fillOpacity": 10 }
+          }
+        }
+      },
+      {
+        "id": 31,
+        "type": "timeseries",
+        "title": "Pass by Layer",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+        "targets": [
+          {
+            "expr": "rate(pktgate_pass_total{layer=\"l3\"}[30s])",
+            "legendFormat": "L3 pass"
+          },
+          {
+            "expr": "rate(pktgate_pass_total{layer=\"l4\"}[30s])",
+            "legendFormat": "L4 pass"
+          },
+          {
+            "expr": "rate(pktgate_pass_total{layer=\"l3v6\"}[30s])",
+            "legendFormat": "L3v6 pass"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "pps",
+            "custom": { "fillOpacity": 10 }
+          }
+        }
+      },
+      {
+        "id": 40,
+        "type": "table",
+        "title": "All Counters (absolute)",
+        "gridPos": { "h": 10, "w": 24, "x": 0, "y": 30 },
+        "targets": [
+          {
+            "expr": "pktgate_drop_total",
+            "legendFormat": "drop {{layer}}/{{reason}}",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "pktgate_pass_total",
+            "legendFormat": "pass {{layer}}",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "pktgate_action_total",
+            "legendFormat": "action {{action}}",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "pktgate_tc_total",
+            "legendFormat": "tc {{action}}",
+            "format": "table",
+            "instant": true
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 39
+  },
+  "overwrite": true
+}
