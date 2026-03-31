@@ -40,7 +40,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design document.
 ### Dependencies
 
 ```bash
-apt install -y clang-16 llvm-16 libbpf-dev bpftool \
+apt install -y clang-19 llvm-19 libbpf-dev bpftool \
     linux-headers-$(uname -r) libelf-dev zlib1g-dev \
     nlohmann-json3-dev
 ```

@@ -20,7 +20,7 @@ pkg_check_modules(LIBBPF REQUIRED libbpf)
 find_package(nlohmann_json 3.11 REQUIRED)
 
 # ── Clang for BPF compilation ─────────────────────────────────
-find_program(CLANG NAMES clang-16 clang-17 clang-18 clang REQUIRED)
+find_program(CLANG NAMES clang-19 clang-18 clang-17 clang-16 clang REQUIRED)
 find_program(BPFTOOL bpftool PATHS /usr/sbin /usr/local/bin REQUIRED)
 
 # ── Options ───────────────────────────────────────────────────

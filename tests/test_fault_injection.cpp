@@ -127,6 +127,35 @@ TEST(validate_huge_port_number) {
     assert(r.error().find("out of range") != std::string::npos);
 }
 
+TEST(validate_port_integer_overflow) {
+    // 4294967296 == UINT32_MAX+1, get<int>() silently returned 0
+    auto r = config::parse_config_string(R"({
+        "device_info": {"interface": "eth0"},
+        "objects": {"port_groups": {"bad": [4294967296]}},
+        "pipeline": {
+            "layer_2": [],
+            "layer_3": [],
+            "layer_4": [{"rule_id":1, "action":"allow", "match":{"protocol":"TCP","dst_port":"object:bad"}}]
+        }
+    })");
+    assert(!r && "port 4294967296 must be rejected (integer overflow)");
+    assert(r.error().find("out of range") != std::string::npos);
+}
+
+TEST(validate_port_float_rejected) {
+    auto r = config::parse_config_string(R"({
+        "device_info": {"interface": "eth0"},
+        "objects": {"port_groups": {"bad": [80.5]}},
+        "pipeline": {
+            "layer_2": [],
+            "layer_3": [],
+            "layer_4": [{"rule_id":1, "action":"allow", "match":{"protocol":"TCP","dst_port":"object:bad"}}]
+        }
+    })");
+    assert(!r && "float port must be rejected");
+    assert(r.error().find("must be an integer") != std::string::npos);
+}
+
 TEST(validate_empty_mac_group) {
     auto r = config::parse_config_string(R"({
         "device_info": {"interface": "eth0"},

@@ -155,7 +155,7 @@ sudo bash functional_tests/run.sh -m slow              # только @slow
   вернул `XDP_PASS`. Если L4 дропнул (`XDP_DROP`), TC не вызывается → клон не создаётся.
 - **Redirect** на veth требует dummy XDP_PASS программу на **peer** интерфейсе
   (veth-ft-mir-p). Без неё `veth_xdp_xmit()` возвращает `-ENXIO` и пакет тихо теряется.
-  Тест компилирует минимальный BPF prog через clang-16 и загружает на peer.
+  Тест компилирует минимальный BPF prog через clang (авто-поиск clang-19..16) и загружает на peer.
 - **Rate-limit** тесты (`@pytest.mark.slow`) отправляют burst 100+ пакетов; результат
   зависит от CPU load. При высокой загрузке возможен flaky fail.
 - **Prometheus metrics** проверяются через `curl` к `127.0.0.1:19199/metrics` изнутри
@@ -213,13 +213,13 @@ Overnight job: corpus кешируется через `actions/cache`, crash art
 ### Нюансы
 
 - **clang-16 не подходит** для libFuzzer mode — нет `std::expected` (C++23).
-  Нужен clang-17+ или standalone mode с GCC.
-- CI (ubuntu-24.04) использует clang-18 — libFuzzer работает.
+  С clang-19 проблема решена. Standalone mode с GCC тоже работает.
+- CI (ubuntu-24.04) использует clang-18+ — libFuzzer работает.
 - Standalone mode (GCC) компилируется с ASAN+UBSAN, но без fuzzer engine.
   Для полноценного мутационного фаззинга — AFL++ или ручной скрипт с мутациями.
 - Seed corpus маленький (5 файлов); для overnight эффективнее начать с расширенного
   корпуса из реальных конфигов.
-- **Известная находка**: port > 65535 проходит валидацию (TODO: фикс в validator).
+- **Известная находка**: port > 65535 проходил валидацию (исправлено: `int` → `int64_t` в парсере).
 
 ---
 

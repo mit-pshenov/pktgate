@@ -5,7 +5,7 @@
 | Компонент        | Статус            | Требуется                          |
 |------------------|-------------------|------------------------------------|
 | Kernel           | 6.1.0-43 (OK)    | >= 5.15 для BPF_MAP_TYPE_LPM_TRIE, tail calls, atomic ops |
-| clang            | ✅ установлен     | `clang-16` или новее               |
+| clang            | ✅ установлен     | `clang-19` (рекомендуется) или `clang-16`+ |
 | libbpf-dev       | ✅ установлен     | `libbpf-dev >= 1.1`                |
 | bpftool          | ✅ установлен     | `bpftool` (генерация skeleton)     |
 | linux-headers    | ✅ установлен     | `linux-headers-$(uname -r)`        |
@@ -13,7 +13,7 @@
 
 Установка (выполнена через `scripts/setup_env.sh`):
 ```bash
-apt install -y clang-16 llvm-16 libbpf-dev bpftool \
+apt install -y clang-19 llvm-19 libbpf-dev bpftool \
     linux-headers-$(uname -r) libelf-dev zlib1g-dev \
     nlohmann-json3-dev
 ```

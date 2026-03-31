@@ -75,7 +75,10 @@ static std::expected<Config, std::string> parse_json(const json& j) {
                 for (auto& [k, v] : obj["port_groups"].items()) {
                     std::vector<uint16_t> ports;
                     for (auto& p : v) {
-                        auto val = p.get<int>();
+                        if (!p.is_number_integer())
+                            return std::unexpected("objects.port_groups." + k +
+                                ": port value must be an integer");
+                        auto val = p.get<int64_t>();
                         if (val < 0 || val > 65535)
                             return std::unexpected("objects.port_groups." + k +
                                 ": port " + std::to_string(val) + " out of range 0-65535");
@@ -136,8 +139,8 @@ std::expected<Config, std::string> parse_config(const std::string& json_path) {
     try {
         json j = json::parse(f);
         return parse_json(j);
-    } catch (const json::parse_error& e) {
-        return std::unexpected(std::string("JSON parse error: ") + e.what());
+    } catch (const json::exception& e) {
+        return std::unexpected(std::string("JSON error: ") + e.what());
     }
 }
 
@@ -145,8 +148,8 @@ std::expected<Config, std::string> parse_config_string(const std::string& json_s
     try {
         json j = json::parse(json_str);
         return parse_json(j);
-    } catch (const json::parse_error& e) {
-        return std::unexpected(std::string("JSON parse error: ") + e.what());
+    } catch (const json::exception& e) {
+        return std::unexpected(std::string("JSON error: ") + e.what());
     }
 }
 

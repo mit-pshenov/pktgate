@@ -13,6 +13,7 @@ to the filter namespace.  Setup/teardown is handled by the module fixture.
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -62,7 +63,12 @@ def _load_dummy_xdp(ns, iface):
         src_path = "/tmp/xdp_pass.c"
         with open(src_path, "w") as f:
             f.write(src)
-        _run(f"clang-16 -target bpf -O2 -c {src_path} -o {obj_path}")
+        for cc in ("clang-19", "clang-18", "clang-17", "clang-16", "clang"):
+            if shutil.which(cc):
+                _run(f"{cc} -target bpf -O2 -c {src_path} -o {obj_path}")
+                break
+        else:
+            pytest.skip("no clang found for BPF compilation")
 
     nsexec(ns, f"ip link set dev {iface} xdp obj {obj_path} sec xdp")
 
