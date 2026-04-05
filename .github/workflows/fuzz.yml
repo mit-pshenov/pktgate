@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 llvm-18 libbpf-dev \
+            clang-19 llvm-19 libbpf-dev \
             libelf-dev zlib1g-dev nlohmann-json3-dev
           sudo apt-get install -y --no-install-recommends linux-tools-generic
           REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
@@ -41,7 +41,7 @@ jobs:
 
       - name: Build fuzz targets
         run: |
-          CC=clang-18 CXX=clang++-18 cmake -B build \
+          CC=clang-19 CXX=clang++-19 cmake -B build \
             -DCMAKE_BUILD_TYPE=Debug -DFUZZ=ON
           cmake --build build -j$(nproc) \
             --target fuzz_config_parser fuzz_net_types fuzz_roundtrip
@@ -83,7 +83,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 llvm-18 libbpf-dev \
+            clang-19 llvm-19 libbpf-dev \
             libelf-dev zlib1g-dev nlohmann-json3-dev
           sudo apt-get install -y --no-install-recommends linux-tools-generic
           REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
@@ -94,7 +94,7 @@ jobs:
 
       - name: Build fuzz target
         run: |
-          CC=clang-18 CXX=clang++-18 cmake -B build \
+          CC=clang-19 CXX=clang++-19 cmake -B build \
             -DCMAKE_BUILD_TYPE=Debug -DFUZZ=ON
           cmake --build build -j$(nproc) \
             --target ${{ matrix.target.name }}
