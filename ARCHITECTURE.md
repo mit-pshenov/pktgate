@@ -919,7 +919,58 @@ systemctl enable --now filter
 
 ### Следующие шаги
 
-1. **AF_XDP functional tests** — pytest+scapy через veth с реальным AF_XDP трафиком (copy mode).
-2. **Custom PacketCallback** — API для пользовательской обработки (DPI, analytics, custom forwarding).
-3. **VLAN CoS rewrite** — `bpf_skb_vlan_push/pop` в TC для CoS tagging.
-4. **Coverage-guided fuzzing** — запустить fuzz harnesses с реальным corpus-ом длительно.
+1. **ICMP/ICMPv6 filtering** — L4 сейчас знает только TCP/UDP; добавить type/code match.
+2. **VLAN CoS rewrite** — `bpf_skb_vlan_push/pop` в TC для CoS tagging.
+3. **Coverage-guided fuzzing** — запустить fuzz harnesses с реальным corpus-ом длительно.
+
+---
+
+## Для последующего рассмотрения: AF_XDP и userspace fast path
+
+### Контекст
+
+Phase 18 добавила AF_XDP userspace fast path: пакеты с `action: userspace`
+проходят полный pipeline (L2→L3→L4), затем `bpf_redirect_map(&xsks_map)`
+перенаправляет их в AF_XDP socket. Реализовано ~1300 LOC: MapRegistry,
+XdpSocket (raw Linux API, без libxdp), XdpSocketManager с worker threads.
+
+Задумка — промежуточный шаг между чистым eBPF/TC и DPDK.
+
+### Текущее состояние
+
+- **BPF data plane**: работает, покрыт unit-тестами (BPF_PROG_TEST_RUN).
+- **Userspace sockets**: код готов, но AF_XDP bind на veth не поддерживается
+  (kernel 6.1, veth не реализует `XDP_SETUP_XSK_POOL`). Работает на реальных NIC
+  с поддержкой AF_XDP (i40e, mlx5, ice, veth начиная с kernel ~6.3+).
+- **Graceful degradation**: при фейле bind pktgate продолжает работу, пакеты
+  fallback на XDP_PASS (доставляются в kernel stack как обычно).
+- **Functional tests**: 13 тестов (7 fallback + 6 socket-dependent с auto-skip).
+
+### Варианты доставки пакетов потребителю
+
+| Вариант | Throughput | Latency | Плюсы | Минусы |
+|---------|-----------|---------|-------|--------|
+| **XDP_REDIRECT на veth/dummy** | ~15-20 Mpps | ~1-5 μs | Нет userspace хопа, нативная скорость. Потребитель слушает обычный интерфейс. | Уже есть как `ACT_REDIRECT`. Skips TC (нет mirror/DSCP на этом пакете). Target veth требует XDP prog на peer. |
+| **AF_XDP → TAP** | ~1-3 Mpps (write/pkt), ~3-5 Mpps (writev/io_uring) | ~10-50 μs | Потребитель слушает обычный интерфейс. Можно модифицировать пакет перед отдачей. | Двойной copy (UMEM→userspace→TAP→kernel). Ирония: AF_XDP убирает kernel, TAP тащит обратно. |
+| **AF_XDP → shared ring** | ~10-20 Mpps | ~1-3 μs | Максимальная скорость. Zero-copy между producer/consumer. | Проприетарный API — потребитель должен линковаться с нашей библиотекой. |
+| **AF_XDP → callback API** | ~10-20 Mpps | ~1-3 μs | Простой C++ API. Потребитель — in-process handler. | Потребитель работает в том же процессе. Падение handler = падение pktgate. |
+
+### Выводы
+
+1. **Если потребителю достаточно получить пакет в интерфейс** — `ACT_REDIRECT`
+   (уже реализован, Phase 9) решает задачу без AF_XDP. Настраивается через
+   `"action": "redirect"` с `target_port`. Работает на ~20 Mpps.
+
+2. **AF_XDP оправдан если**:
+   - Потребитель готов забирать пакеты через API (callback / shared ring) — DPI,
+     analytics, custom forwarding в userspace.
+   - Нужна модификация пакета перед доставкой.
+   - Это шаг в сторону DPDK poll-mode processing.
+
+3. **AF_XDP НЕ оправдан если**:
+   - Задача — просто отдать пакет в другой интерфейс (redirect дешевле).
+   - TAP как consumer-интерфейс: двойной kernel crossing обнуляет преимущество AF_XDP.
+
+**Решение**: AF_XDP инфраструктура сохранена в main (Phase 18), graceful degradation
+работает. Возвращаемся к теме когда появится конкретный потребитель с API-интеграцией.
+До тех пор `ACT_REDIRECT` покрывает сценарий «отдать пакет наружу».

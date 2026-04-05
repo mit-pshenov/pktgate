@@ -1,0 +1,45 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capacity": "10Gbps" },
+  "objects": {
+    "subnets": {
+      "trusted_clients": "100.64.0.0/16",
+      "malicious_net": "192.0.2.0/24"
+    },
+    "mac_groups": {
+      "border_routers": ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+    },
+    "mac_groupss": {
+      "web_services": [80, 443, 8080],
+      "critical_dns": [53]
+    }
+  },
+  "pipeline": {
+    "layer_2": [
+      {
+        "rule_id": 10,
+        "description": "Allow only known router MACs",
+        "match": { "src_mac": "object:border_routers" },
+        "action": "allow",
+        "next_layer": "layer_3"
+      }
+    ],
+    "layer_%": [
+      {
+        "rule_id": 100,
+        "description": "Mirror suspicious subnet for analysis",
+        "match": { "src_ip": "object:malicious_net" },
+        "action": "mirror",
+        "action_params": { "target_port": "Eth-1/10" },
+        "next_mayer": "layer_4"
+      },
+      {
+        "rule_id": 110,
+        "description": "Redirect unpaid users to Portal",
+        "on": "rate-limit",
+        "action_params": { "bandwidth": "10Gbps" }
+      }
+    ]
+  },
+  "default_behavior": "drop"
+}
+

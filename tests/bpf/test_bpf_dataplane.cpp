@@ -21,6 +21,7 @@
 #include <arpa/inet.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
 
@@ -84,6 +85,53 @@ struct PacketBuilder {
         return *this;
     }
 
+    /// Add IPv6 header
+    PacketBuilder& ipv6(const uint8_t src[16], const uint8_t dst[16],
+                        uint8_t nexthdr, uint16_t payload_len = 20,
+                        uint8_t traffic_class = 0) {
+        size_t off = buf.size();
+        buf.resize(off + sizeof(struct ipv6hdr));
+        struct ipv6hdr h{};
+        // Version(4) | TC_high(4) | TC_low(4) | Flow_Label(20)
+        // First 4 bytes: 0x6T TF FF FF where T=TC, F=FlowLabel
+        h.version = 6;
+        h.priority = traffic_class >> 4;      // TC high 4 bits
+        h.flow_lbl[0] = (traffic_class << 4); // TC low 4 bits | flow_label high 4 bits
+        h.payload_len = htons(payload_len);
+        h.nexthdr = nexthdr;
+        h.hop_limit = 64;
+        memcpy(&h.saddr, src, 16);
+        memcpy(&h.daddr, dst, 16);
+        memcpy(buf.data() + off, &h, sizeof(h));
+        return *this;
+    }
+
+    /// Add IPv6 extension header (Hop-by-Hop, Routing, or Destination)
+    /// nexthdr: next header type, len_units: length in 8-octet units (excluding first 8)
+    PacketBuilder& ipv6_ext(uint8_t nexthdr, uint8_t len_units = 0) {
+        size_t off = buf.size();
+        size_t ext_len = (static_cast<size_t>(len_units) + 1) * 8;
+        buf.resize(off + ext_len, 0);
+        buf[off] = nexthdr;       // Next Header
+        buf[off + 1] = len_units; // Header Extension Length
+        return *this;
+    }
+
+    /// Add IPv6 Fragment Header (nexthdr 44, always 8 bytes)
+    PacketBuilder& ipv6_frag(uint8_t nexthdr, uint16_t frag_off = 0, uint32_t id = 1) {
+        size_t off = buf.size();
+        buf.resize(off + 8, 0);
+        buf[off] = nexthdr;                          // Next Header
+        buf[off + 1] = 0;                            // Reserved
+        buf[off + 2] = (frag_off >> 5) & 0xFF;      // Fragment Offset high
+        buf[off + 3] = (frag_off << 3) & 0xFF;      // Fragment Offset low | Res | M
+        buf[off + 4] = (id >> 24) & 0xFF;
+        buf[off + 5] = (id >> 16) & 0xFF;
+        buf[off + 6] = (id >> 8) & 0xFF;
+        buf[off + 7] = id & 0xFF;
+        return *this;
+    }
+
     /// Pad to minimum Ethernet frame size
     PacketBuilder& pad(size_t min_size = 64) {
         if (buf.size() < min_size)
@@ -100,6 +148,12 @@ static uint32_t ip_nbo(const char* ip) {
     inet_pton(AF_INET, ip, &addr);
     return addr;
 }
+
+// Well-known IPv6 addresses for tests
+static const uint8_t SRC_IP6_ALLOW[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 0, 0, 1}; // 2001:db8::1
+static const uint8_t DST_IP6[16]       = {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 0, 0, 2}; // 2001:db8::2
 
 // ── BPF_PROG_TEST_RUN wrapper ───────────────────────────────
 
@@ -180,6 +234,16 @@ static void setup_standard_config(pktgate::loader::BpfLoader& loader, uint32_t g
     l3_allow.action = ACT_ALLOW;
     l3_allow.has_next_layer = 1;
     r = MM::update_elem(reg.subnet_rules_fd(gen), &lpm_allow, &l3_allow, BPF_ANY);
+    assert(r.has_value());
+
+    // --- IPv6 Subnet rules: 2001:db8::/32 → ALLOW + next_layer ---
+    struct lpm_v6_key lpm6_allow = { .prefixlen = 32 };
+    memcpy(lpm6_allow.addr, SRC_IP6_ALLOW, 16); // 2001:db8::1 matches /32
+    struct l3_rule l3v6_allow{};
+    l3v6_allow.rule_id = 12;
+    l3v6_allow.action = ACT_ALLOW;
+    l3v6_allow.has_next_layer = 1;
+    r = MM::update_elem(reg.subnet6_rules_fd(gen), &lpm6_allow, &l3v6_allow, BPF_ANY);
     assert(r.has_value());
 
     // --- L4 rules: TCP:80 → ALLOW ---
@@ -614,6 +678,151 @@ TEST(test_pipeline_non_userspace_unaffected) {
     auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
     assert(res.ok);
     assert(res.retval == XDP_PASS); // Normal flow unaffected
+}
+
+// ═══════════════════════════════════════════════════════════
+// IPv6 Tests
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_pipeline_ipv6_tcp80_allow) {
+    // IPv6: 2001:db8::1 → L3 ALLOW+next → L4 TCP:80 ALLOW → PASS
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IPV6)
+        .ipv6(SRC_IP6_ALLOW, DST_IP6, IPPROTO_TCP,
+              sizeof(struct tcphdr))
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+TEST(test_pipeline_ipv6_direct_fragment_dropped) {
+    // IPv6 with Fragment Header as nexthdr (44) → L3 drops it
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IPV6)
+        .ipv6(SRC_IP6_ALLOW, DST_IP6, 44 /* Fragment */,
+              8 + sizeof(struct tcphdr))
+        .ipv6_frag(IPPROTO_TCP, 0, 42)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+}
+
+TEST(test_pipeline_ipv6_fragment_behind_hopbyhop) {
+    // IPv6 with Hop-by-Hop(0) → Fragment(44) → TCP
+    // This exercises the ext header walk added to L3.
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IPV6)
+        .ipv6(SRC_IP6_ALLOW, DST_IP6, 0 /* Hop-by-Hop */,
+              8 + 8 + sizeof(struct tcphdr)) // HbH(8) + Frag(8) + TCP
+        .ipv6_ext(44 /* next=Fragment */, 0) // Hop-by-Hop, 8 bytes
+        .ipv6_frag(IPPROTO_TCP, 0, 42)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // Fragment detected after walking HbH
+}
+
+TEST(test_pipeline_ipv6_fragment_behind_routing) {
+    // IPv6 with Routing(43) → Fragment(44) → TCP
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IPV6)
+        .ipv6(SRC_IP6_ALLOW, DST_IP6, 43 /* Routing */,
+              8 + 8 + sizeof(struct tcphdr))
+        .ipv6_ext(44 /* next=Fragment */, 0) // Routing, 8 bytes
+        .ipv6_frag(IPPROTO_TCP, 0, 42)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+}
+
+TEST(test_pipeline_ipv6_hopbyhop_tcp_passes) {
+    // IPv6 with Hop-by-Hop(0) → TCP (no fragment) — should pass through
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IPV6)
+        .ipv6(SRC_IP6_ALLOW, DST_IP6, 0 /* Hop-by-Hop */,
+              8 + sizeof(struct tcphdr))
+        .ipv6_ext(IPPROTO_TCP, 0) // Hop-by-Hop, next=TCP
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+TEST(test_pipeline_ipv6_udp53_tag) {
+    // IPv6 + UDP:53 → L4 TAG → PASS (DSCP set in metadata for TC)
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IPV6)
+        .ipv6(SRC_IP6_ALLOW, DST_IP6, IPPROTO_UDP,
+              sizeof(struct udphdr))
+        .udp(1234, 53)
+        .pad();
+
+    auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+// ═══════════════════════════════════════════════════════════
+// STAT_USERSPACE_FAIL counter test
+// ═══════════════════════════════════════════════════════════
+
+static uint64_t read_stat(const pktgate::loader::MapRegistry& reg, uint32_t stat_key) {
+    // stats_map is PERCPU_ARRAY — read all per-CPU values and sum
+    int ncpus = libbpf_num_possible_cpus();
+    if (ncpus < 1) return 0;
+    std::vector<uint64_t> values(ncpus, 0);
+    int err = bpf_map_lookup_elem(reg.stats_map_fd(), &stat_key, values.data());
+    if (err < 0) return 0;
+    uint64_t total = 0;
+    for (int i = 0; i < ncpus; i++) total += values[i];
+    return total;
+}
+
+TEST(test_stat_userspace_fail_incremented) {
+    using MM = pktgate::loader::MapManager;
+    auto& reg = loader.registry();
+
+    // Add L4 rule: TCP:8081 → ACT_USERSPACE
+    struct l4_match_key l4k = { .protocol = 6, ._pad = 0, .dst_port = 8081 };
+    struct l4_rule l4r{};
+    l4r.rule_id = 210;
+    l4r.action = ACT_USERSPACE;
+    auto r = MM::update_elem(reg.l4_rules_fd(0), &l4k, &l4r, BPF_ANY);
+    assert(r.has_value());
+
+    // Read STAT_USERSPACE_FAIL before
+    uint64_t before = read_stat(reg, STAT_USERSPACE_FAIL);
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 8081)
+        .pad();
+
+    auto res = run_xdp_prog(loader.registry().entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    // xsks_map is empty → fallback to XDP_PASS
+    assert(res.retval == XDP_PASS);
+
+    // Read STAT_USERSPACE_FAIL after — should have incremented
+    uint64_t after = read_stat(reg, STAT_USERSPACE_FAIL);
+    assert(after > before);
+
+    // Cleanup
+    MM::delete_elem(reg.l4_rules_fd(0), &l4k);
 }
 
 // ═══════════════════════════════════════════════════════════

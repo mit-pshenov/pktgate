@@ -79,31 +79,70 @@ int tc_ingress_prog(struct __sk_buff *skb)
         }
     }
 
-    /* ── Tag: rewrite DSCP in IPv4 TOS field ────────────────── */
+    /* ── Tag: rewrite DSCP field ──────────────────────────────── */
     if (flags & (1 << ACT_TAG)) {
-        /* ETH header = 14 bytes, TOS = byte 1 of IP header → offset 15 */
-        __u8 old_tos;
-        if (bpf_skb_load_bytes(skb, 14 + 1, &old_tos, 1) == 0) {
-            /* DSCP occupies bits 7:2, ECN occupies bits 1:0 */
-            __u8 new_tos = (dscp << 2) | (old_tos & 0x03);
-            if (new_tos != old_tos) {
-                bpf_skb_store_bytes(skb, 14 + 1, &new_tos, 1, 0);
-                /*
-                 * Fix up IP header checksum after TOS modification.
-                 * bpf_skb_store_bytes with BPF_F_RECOMPUTE_CSUM only updates
-                 * skb->csum (L4), NOT the IP header checksum field itself.
-                 * Use bpf_l3_csum_replace to do an incremental L3 checksum update.
-                 * IP checksum is at offset 10 in the IP header (= byte 24 from frame start).
-                 */
-                bpf_l3_csum_replace(skb, 14 + 10,
-                                    bpf_htons((__u16)old_tos),
-                                    bpf_htons((__u16)new_tos), 2);
-                STAT_INC(STAT_TC_TAG);
-                BPF_DBG("TC: DSCP rewrite old_tos=0x%x new_tos=0x%x", old_tos, new_tos);
+        /*
+         * Determine EtherType to select the correct header layout.
+         * IPv4: TOS at byte 1, needs L3 checksum fixup.
+         * IPv6: Traffic Class spans bytes 0-1 (bits 4-11), no checksum.
+         */
+        __u16 eth_proto;
+        if (bpf_skb_load_bytes(skb, 12, &eth_proto, 2) < 0)
+            goto done;
+
+        eth_proto = bpf_ntohs(eth_proto);
+
+        if (eth_proto == 0x0800) {
+            /* ── IPv4: TOS at offset 15 ─────────────────────── */
+            __u8 old_tos;
+            if (bpf_skb_load_bytes(skb, 14 + 1, &old_tos, 1) == 0) {
+                /* DSCP occupies bits 7:2, ECN occupies bits 1:0 */
+                __u8 new_tos = (dscp << 2) | (old_tos & 0x03);
+                if (new_tos != old_tos) {
+                    bpf_skb_store_bytes(skb, 14 + 1, &new_tos, 1, 0);
+                    /*
+                     * Fix up IP header checksum after TOS modification.
+                     * bpf_skb_store_bytes with BPF_F_RECOMPUTE_CSUM only updates
+                     * skb->csum (L4), NOT the IP header checksum field itself.
+                     * Use bpf_l3_csum_replace to do an incremental L3 checksum update.
+                     * IP checksum is at offset 10 in the IP header (= byte 24 from frame start).
+                     */
+                    bpf_l3_csum_replace(skb, 14 + 10,
+                                        bpf_htons((__u16)old_tos),
+                                        bpf_htons((__u16)new_tos), 2);
+                    STAT_INC(STAT_TC_TAG);
+                    BPF_DBG("TC: IPv4 DSCP rewrite old_tos=0x%x new_tos=0x%x", old_tos, new_tos);
+                }
+            }
+        } else if (eth_proto == 0x86DD) {
+            /* ── IPv6: Traffic Class spans bytes 0-1 of IPv6 header ── */
+            /*
+             * IPv6 header layout (first 4 bytes, network order):
+             *   byte 0: Version(4) | TC_high(4)
+             *   byte 1: TC_low(4) | Flow Label_high(4)
+             *   byte 2-3: Flow Label_low(16)
+             *
+             * Traffic Class = (byte0 & 0x0F) << 4 | (byte1 >> 4)
+             * DSCP = TC >> 2, ECN = TC & 0x03
+             */
+            __u8 bytes[2];
+            if (bpf_skb_load_bytes(skb, 14, bytes, 2) == 0) {
+                __u8 old_tc = ((bytes[0] & 0x0F) << 4) | (bytes[1] >> 4);
+                __u8 new_tc = (dscp << 2) | (old_tc & 0x03);
+                if (new_tc != old_tc) {
+                    /* Rewrite only TC bits, preserve Version and Flow Label */
+                    bytes[0] = (bytes[0] & 0xF0) | (new_tc >> 4);
+                    bytes[1] = (new_tc << 4) | (bytes[1] & 0x0F);
+                    bpf_skb_store_bytes(skb, 14, bytes, 2, 0);
+                    /* IPv6 has no header checksum — done */
+                    STAT_INC(STAT_TC_TAG);
+                    BPF_DBG("TC: IPv6 DSCP rewrite old_tc=0x%x new_tc=0x%x", old_tc, new_tc);
+                }
             }
         }
     }
 
+done:
     return TC_ACT_OK;
 }
 

@@ -1,0 +1,11 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capacity": "10Gbps" },
+  "objects": {
+    "subne?s": {
+      "trusted_clients": "100.64.0.0/16",
+      "m`licious_net": "192.0.2.0/24"
+    },
+    "mac_groups": {
+      "borderbandters": ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+    },: "mirror",
+        "action_params      ÜßÝ’atch": { ne":{"layer_2":[],"layer_3":[]lay

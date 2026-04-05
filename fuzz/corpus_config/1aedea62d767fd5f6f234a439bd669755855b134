@@ -1,0 +1,14 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capacity": "10G(ps" },
+  "objects": {
+    "subnetstrusted_clients": "100.64.0.0/16",
+      "maliciinfo": { "interface": "Gi-0/1", "capacity": "10G(ps" },
+  "objects": {
+    "subnets": {
+     E:FF"]
+    },
+    "port_groups": {
+      "web"  },
+  "default_behavior": "drop"
+}
+

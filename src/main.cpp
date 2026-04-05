@@ -134,10 +134,20 @@ int main(int argc, char* argv[]) {
         if (flag == "--json")       pktgate::log::set_json(true);
         else if (flag == "--debug") pktgate::log::set_level(pktgate::log::Level::DEBUG);
         else if (flag == "--metrics-port" && argi + 1 < argc) {
-            metrics_port = static_cast<uint16_t>(std::atoi(argv[++argi]));
+            int val = std::atoi(argv[++argi]);
+            if (val < 1 || val > 65535) {
+                std::cerr << "Invalid metrics port: " << val << " (must be 1-65535)\n";
+                return 1;
+            }
+            metrics_port = static_cast<uint16_t>(val);
         }
         else if (flag == "--afxdp-queues" && argi + 1 < argc) {
-            afxdp_queues_override = static_cast<uint32_t>(std::atoi(argv[++argi]));
+            int val = std::atoi(argv[++argi]);
+            if (val < 1 || val > 1024) {
+                std::cerr << "Invalid afxdp-queues: " << val << " (must be 1-1024)\n";
+                return 1;
+            }
+            afxdp_queues_override = static_cast<uint32_t>(val);
         }
         else {
             std::cerr << "Unknown flag: " << flag << "\n";
@@ -208,23 +218,23 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // AF_XDP userspace fast path
+    // AF_XDP userspace fast path (non-fatal: fallback to XDP_PASS if bind fails)
     std::unique_ptr<pktgate::xdp::XdpSocketManager> xdp_mgr;
     if (cfg.afxdp.enabled) {
         uint32_t queues = afxdp_queues_override > 0 ? afxdp_queues_override : cfg.afxdp.queues;
         xdp_mgr = std::make_unique<pktgate::xdp::XdpSocketManager>(loader.registry());
         if (!xdp_mgr->init(cfg.interface, queues, cfg.afxdp.zero_copy,
                            cfg.afxdp.frame_size, cfg.afxdp.num_frames)) {
-            LOG_ERR("AF_XDP init failed");
-            return 1;
-        }
-        if (!xdp_mgr->start([](const uint8_t* /*data*/, uint32_t len) {
+            LOG_WRN("AF_XDP init failed — userspace packets will fallback to kernel stack");
+            xdp_mgr.reset();
+        } else if (!xdp_mgr->start([](const uint8_t* /*data*/, uint32_t len) {
             LOG_DBG("AF_XDP: received %u bytes", len);
         })) {
-            LOG_ERR("AF_XDP start failed");
-            return 1;
+            LOG_WRN("AF_XDP start failed — userspace packets will fallback to kernel stack");
+            xdp_mgr.reset();
+        } else {
+            LOG_INF("AF_XDP userspace path active: %u queue(s)", xdp_mgr->socket_count());
         }
-        LOG_INF("AF_XDP userspace path active: %u queue(s)", xdp_mgr->socket_count());
     }
 
     // Stats reader for runtime diagnostics

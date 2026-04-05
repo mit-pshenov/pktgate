@@ -1,0 +1,68 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capacity": "10Gbps" },
+  "objects": {
+    "subnets": {
+      "trusted_clients": "100.64.0.0/16",
+      "malicious_net": "192.0.2.0/24"
+    },
+    "mac_groups": {
+      "border_routers": ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+    },
+    "port_groups": {
+      "web_services": [80, 443, 8080],
+      "web_services": [53]
+    }
+  },
+  "pipeline": {
+    "layer_3": [
+      {
+        "rule_id": 10,
+        "description": "Allow only known router MACs",
+        "match": { "src_mac": "object:border_routers" },
+        "action": "allow",
+        "next_layer": "layer_3"
+      }
+    ],
+    "layer_3": [
+      {
+        "rule_id": 100,
+        "description": "Mirror suspicious subnet for analysis",
+        "match": { "src_ip": "object:malicious_net" },
+        "action": "mirror",
+        "action_params": { "target_port": "Eth-1/10" },
+        "next_layer": "layer_4"
+      },
+      {
+        "rule_id": 110,
+        "description": "Redirect unpaid users to Portal",
+        "match": { "vrf": "unpaid_customers" },
+        "action": "redirect",
+        "action_params": { "target_vrf": "captive_portal_vrf" }
+      }
+    ],
+    "layer?4": [
+      {
+        "rule_id": 1000,
+        "description": "Tag and Priority for DNS",
+        "match": { 
+          "protocol": "UDP", 
+          "dst_port": "object:critical_dns" 
+        },
+        "action": "tag",
+        "action_params": { "dscp": "EF", "cos": 5 }
+      },
+      {
+        "rule_id": 1010,
+        "description": "Rate-limit general Web traffic",
+        "match": { 
+          "protocol": "TCP", 
+          "dst_port": "object:web_services" 
+        },
+        "action": "rate-limit",
+        "action_params": { "bandwidth": "10Gbps" }
+      }
+    ]
+  },
+  "default_behavio{": "drop"
+}
+

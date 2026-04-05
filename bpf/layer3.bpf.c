@@ -25,8 +25,13 @@ static __always_inline int maybe_redirect_xsk(struct xdp_md *ctx,
                                                int fallback)
 {
     if (meta->action_flags & (1 << ACT_USERSPACE)) {
+        int ret = bpf_redirect_map(&xsks_map, ctx->rx_queue_index, fallback);
+        if (ret != XDP_REDIRECT) {
+            STAT_INC(STAT_USERSPACE_FAIL);
+            return ret;
+        }
         STAT_INC(STAT_USERSPACE);
-        return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, fallback);
+        return ret;
     }
     return fallback;
 }
@@ -215,13 +220,48 @@ int layer3_prog(struct xdp_md *ctx)
             return XDP_DROP;
         }
 
-        /* Drop IPv6 fragments — nexthdr 44 is the Fragment Header.
+        /*
+         * Drop IPv6 fragments — nexthdr 44 is the Fragment Header.
+         * Walk up to 4 extension headers to catch Fragment headers
+         * hidden behind Hop-by-Hop (0), Routing (43), Destination (60).
          * Fragmented IPv6 packets lack reliable L4 headers beyond
-         * the first fragment, same rationale as IPv4 frag_off check. */
-        if (ip6h->nexthdr == 44) {
-            STAT_INC(STAT_DROP_L3_V6_FRAGMENT);
-            BPF_DBG("L3v6: fragment header detected, dropping");
-            return XDP_DROP;
+         * the first fragment, same rationale as IPv4 frag_off check.
+         */
+        {
+            __u8 nhdr = ip6h->nexthdr;
+            unsigned char *cursor = (unsigned char *)(ip6h + 1);
+
+            #pragma unroll
+            for (int i = 0; i < 4; i++) {
+                if (nhdr == 44) {
+                    STAT_INC(STAT_DROP_L3_V6_FRAGMENT);
+                    BPF_DBG("L3v6: fragment header detected (depth=%d), dropping", i);
+                    return XDP_DROP;
+                }
+                /* Only skip known extension headers */
+                if (nhdr != 0 && nhdr != 43 && nhdr != 60)
+                    break;
+                /* Read next header + length fields */
+                if (cursor + 2 > data_end) {
+                    STAT_INC(STAT_DROP_L3_BOUNDS);
+                    return XDP_DROP;
+                }
+                __u8 next = *cursor;
+                __u8 hlen = *(cursor + 1);
+                __u32 ext_len = ((__u32)hlen + 1) * 8;
+                cursor += ext_len;
+                if (cursor > data_end) {
+                    STAT_INC(STAT_DROP_L3_BOUNDS);
+                    return XDP_DROP;
+                }
+                nhdr = next;
+            }
+            /* Final check after loop exits (e.g. fragment at depth 4) */
+            if (nhdr == 44) {
+                STAT_INC(STAT_DROP_L3_V6_FRAGMENT);
+                BPF_DBG("L3v6: fragment header detected after ext walk, dropping");
+                return XDP_DROP;
+            }
         }
 
         /* LPM trie lookup on IPv6 source address */

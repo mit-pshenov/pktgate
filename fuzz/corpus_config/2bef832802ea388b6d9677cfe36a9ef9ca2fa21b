@@ -1,0 +1,12 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capacity": "10Gbps" },
+  "objects": {
+    "subnets": {
+      "trusted_clients": "1mac_groups16",
+      "malicious_net": "192.0.2.0/24"
+    },
+    "mac_groups": {
+      "border_routers": ["00:11:22:33:44:55"r",
+        "action_pap"
+}
+

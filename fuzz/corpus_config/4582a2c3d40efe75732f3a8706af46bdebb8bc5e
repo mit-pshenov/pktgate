@@ -1,0 +1,7 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capac": "100.64.0.0/16",
+      "malicious_net": "192.0.2.0/24"
+    },
+    "mac_groups": {
+      "border_routers": ["00:11:22i "drop"
+}A

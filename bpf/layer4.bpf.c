@@ -25,8 +25,13 @@ static __always_inline int maybe_redirect_xsk(struct xdp_md *ctx,
                                                int fallback)
 {
     if (meta->action_flags & (1 << ACT_USERSPACE)) {
+        int ret = bpf_redirect_map(&xsks_map, ctx->rx_queue_index, fallback);
+        if (ret != XDP_REDIRECT) {
+            STAT_INC(STAT_USERSPACE_FAIL);
+            return ret;
+        }
         STAT_INC(STAT_USERSPACE);
-        return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, fallback);
+        return ret;
     }
     return fallback;
 }
@@ -273,10 +278,16 @@ int layer4_prog(struct xdp_md *ctx)
         return do_rate_limit(ctx, meta, rule, pkt_len);
     }
 
-    case ACT_USERSPACE:
-        STAT_INC(STAT_USERSPACE);
+    case ACT_USERSPACE: {
         BPF_DBG("L4: rule %d proto=%d port=%d → USERSPACE", rule->rule_id, proto, dst_port);
-        return bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_PASS);
+        int xsk_ret = bpf_redirect_map(&xsks_map, ctx->rx_queue_index, XDP_PASS);
+        if (xsk_ret != XDP_REDIRECT) {
+            STAT_INC(STAT_USERSPACE_FAIL);
+            return xsk_ret;
+        }
+        STAT_INC(STAT_USERSPACE);
+        return xsk_ret;
+    }
 
     default:
         STAT_INC(STAT_DROP_L4_RULE);

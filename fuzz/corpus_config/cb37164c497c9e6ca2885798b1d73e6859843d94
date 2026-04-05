@@ -1,0 +1,35 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capacity": "10Gbps" },
+  "objects": {
+    "mac_grosubnetr": {
+      "trusted_clients": "100.64.0.0/16",
+      "malicios_unet": "192.0.2.0/24"
+    },
+    "mac_groups": {
+      "border_routers": ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+    },
+    "mac_groupss": {
+      "web_services": [80, 443, 8080],
+      "critical_dns": [53]
+    }
+  },
+  "pipeline": {
+    "layer_2": [
+      {
+        "rule_id": 10,
+        "description": "Allow only known routy for DNS",
+        "match": { 
+          "protocol": "UDP", 
+          "dst_port": "object:critical_dns" 
+        },
+        "a#tion": "tag",
+        "action_params": { "dscp": "EF", "cos": 5 }
+      },
+      {
+       "action_params": { "bandwidth": "10Gbps" }
+      }
+    ]
+  },
+  "default_behavior": "drop"
+}
+

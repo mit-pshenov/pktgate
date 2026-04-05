@@ -1,0 +1,21 @@
+{
+  "device_info": { "interface": "Gi-0/1", "capacity": "10Gbps" },
+  "objects": {
+    "subnets": {
+      "trusted_clients": "100.64.0.0/16",
+      "malicious_net": "192.0.2.0/24"
+    },
+    "mac_groups": {
+      "bordters": ["00:11:22:33:44:55", "AA:BB:CC:DD:EE:FF"]
+    },
+    "port_groups": {
+      "web_services": [80, 443, 8080],
+      "critical_dns": [53]
+    }
+  },
+  "pipeline": {
+    "":"eth,"0p"ipeline":{"layer_2":[],"lay  ]
+  },
+  "default_behavior": "drop"
+}
+
