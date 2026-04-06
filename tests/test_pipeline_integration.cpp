@@ -39,7 +39,7 @@ struct MockMap {
 };
 
 // Global mock state
-static MockMap g_mac_allow[2];
+static MockMap g_l2_maps[2];
 static MockMap g_subnet_rules[2];
 static MockMap g_vrf_rules[2];
 static MockMap g_l4_rules[2];
@@ -52,7 +52,7 @@ static auto null_resolver = [](const std::string&) -> uint32_t { return 0; };
 
 static void reset_mock_state() {
     for (int i = 0; i < 2; ++i) {
-        g_mac_allow[i].clear();
+        g_l2_maps[i].clear();
         g_subnet_rules[i].clear();
         g_vrf_rules[i].clear();
         g_l4_rules[i].clear();
@@ -160,8 +160,14 @@ TEST(test_full_compile_pipeline) {
     auto resolver = [](const std::string&) -> uint32_t { return 0; };
     auto rules = compiler::compile_rules(cfg->pipeline, cfg->objects, resolver);
     assert(rules.has_value());
+    assert(rules->l2_rules.size() == 1);  // 1 MAC from routers group
     assert(rules->l3_rules.size() == 1);
     assert(rules->l4_rules.size() == 2); // expanded from port group [80, 443]
+
+    // Verify L2 rule
+    assert(rules->l2_rules[0].type == compiler::L2MatchType::SrcMac);
+    assert(rules->l2_rules[0].rule.action == 1);  // ACT_ALLOW
+    assert(rules->l2_rules[0].rule.next_layer == 1); // LAYER_3_IDX
 
     // Verify L3 rule
     assert(rules->l3_rules[0].subnet_key.prefixlen == 8);

@@ -36,8 +36,8 @@ public:
 
 private:
     std::expected<void, std::string> clear_shadow_maps(uint32_t gen);
-    std::expected<void, std::string> populate_mac_map(
-        uint32_t gen, const compiler::CompiledObjects& objects);
+    std::expected<void, std::string> populate_l2_maps(
+        uint32_t gen, const compiler::CompiledRules& rules);
     std::expected<void, std::string> populate_subnet_map(
         uint32_t gen, const compiler::CompiledRules& rules);
     std::expected<void, std::string> populate_subnet6_map(

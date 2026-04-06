@@ -1,5 +1,6 @@
 #include "compiler/rule_compiler.hpp"
 #include "util/net_types.hpp"
+#include <arpa/inet.h>
 #include <bpf/libbpf.h>
 #include <cstring>
 #include <unordered_map>
@@ -50,6 +51,31 @@ static std::string resolve_object_subnet6(const std::string& ref,
     return ref; // literal IPv6 CIDR
 }
 
+/// Resolve "object:xxx" mac group to a list of parsed MAC addresses.
+static std::vector<util::MacAddr> resolve_object_macs(const std::string& ref,
+                                                       const config::ObjectStore& objects) {
+    if (ref.starts_with("object:")) {
+        auto name = ref.substr(7);
+        auto it = objects.mac_groups.find(name);
+        if (it == objects.mac_groups.end())
+            throw std::invalid_argument("Unknown mac_group object: " + name);
+        std::vector<util::MacAddr> result;
+        for (auto& mac_str : it->second)
+            result.push_back(util::MacAddr::parse(mac_str));
+        return result;
+    }
+    // Literal single MAC
+    return { util::MacAddr::parse(ref) };
+}
+
+/// Map next_layer config string to BPF layer index.
+static uint8_t next_layer_to_idx(const std::optional<std::string>& nl) {
+    if (!nl) return 0;
+    if (*nl == "layer_3") return 1; // LAYER_3_IDX
+    if (*nl == "layer_4") return 2; // LAYER_4_IDX
+    return 0;
+}
+
 /// Resolve "object:xxx" port group to a list of ports.
 static std::vector<uint16_t> resolve_object_ports(const std::string& ref,
                                                     const config::ObjectStore& objects) {
@@ -89,6 +115,52 @@ compile_rules(const config::Pipeline& pipeline,
     result.l4_rules.reserve(l4_estimate);
 
     try {
+        // Compile Layer 2 rules
+        for (auto& rule : pipeline.layer_2) {
+            struct l2_rule base{};
+            base.rule_id = rule.rule_id;
+            base.action  = action_to_bpf(rule.action);
+            base.next_layer = next_layer_to_idx(rule.next_layer);
+
+            if (rule.action == config::Action::Redirect && rule.params.target_vrf)
+                base.redirect_ifindex = resolver(*rule.params.target_vrf);
+            if (rule.action == config::Action::Mirror && rule.params.target_port)
+                base.mirror_ifindex = resolver(*rule.params.target_port);
+
+            if (rule.match.src_mac) {
+                auto macs = resolve_object_macs(*rule.match.src_mac, objects);
+                for (auto& mac : macs) {
+                    CompiledL2Rule cr{};
+                    cr.type = L2MatchType::SrcMac;
+                    std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
+                    cr.rule = base;
+                    result.l2_rules.push_back(cr);
+                }
+            } else if (rule.match.dst_mac) {
+                auto macs = resolve_object_macs(*rule.match.dst_mac, objects);
+                for (auto& mac : macs) {
+                    CompiledL2Rule cr{};
+                    cr.type = L2MatchType::DstMac;
+                    std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
+                    cr.rule = base;
+                    result.l2_rules.push_back(cr);
+                }
+            } else if (rule.match.ethertype) {
+                auto eth_val = config::parse_ethertype(*rule.match.ethertype);
+                CompiledL2Rule cr{};
+                cr.type = L2MatchType::Ethertype;
+                cr.ether.ethertype = htons(eth_val);  // store in network byte order
+                cr.rule = base;
+                result.l2_rules.push_back(cr);
+            } else if (rule.match.vlan_id) {
+                CompiledL2Rule cr{};
+                cr.type = L2MatchType::Vlan;
+                cr.vlan.vlan_id = *rule.match.vlan_id;
+                cr.rule = base;
+                result.l2_rules.push_back(cr);
+            }
+        }
+
         // Compile Layer 3 rules
         for (auto& rule : pipeline.layer_3) {
             CompiledL3Rule cr{};
@@ -186,6 +258,55 @@ compile_rules(const config::Pipeline& pipeline,
     }
 
     // ── Detect map key collisions ──────────────────────────────
+
+    // L2: duplicate keys within each match type
+    {
+        // src_mac collisions
+        std::unordered_map<std::string, uint32_t> src_seen, dst_seen;
+        std::unordered_map<uint16_t, uint32_t> ether_seen, vlan_seen;
+
+        for (auto& cr : result.l2_rules) {
+            std::string mac_str(reinterpret_cast<const char*>(cr.mac.addr), 6);
+            switch (cr.type) {
+            case L2MatchType::SrcMac: {
+                auto [it, ok] = src_seen.emplace(mac_str, cr.rule.rule_id);
+                if (!ok)
+                    return std::unexpected(
+                        "L2 src_mac key collision: same MAC used by rule " +
+                        std::to_string(it->second) + " and rule " +
+                        std::to_string(cr.rule.rule_id));
+                break;
+            }
+            case L2MatchType::DstMac: {
+                auto [it, ok] = dst_seen.emplace(mac_str, cr.rule.rule_id);
+                if (!ok)
+                    return std::unexpected(
+                        "L2 dst_mac key collision: same MAC used by rule " +
+                        std::to_string(it->second) + " and rule " +
+                        std::to_string(cr.rule.rule_id));
+                break;
+            }
+            case L2MatchType::Ethertype: {
+                auto [it, ok] = ether_seen.emplace(cr.ether.ethertype, cr.rule.rule_id);
+                if (!ok)
+                    return std::unexpected(
+                        "L2 ethertype key collision: same ethertype used by rule " +
+                        std::to_string(it->second) + " and rule " +
+                        std::to_string(cr.rule.rule_id));
+                break;
+            }
+            case L2MatchType::Vlan: {
+                auto [it, ok] = vlan_seen.emplace(cr.vlan.vlan_id, cr.rule.rule_id);
+                if (!ok)
+                    return std::unexpected(
+                        "L2 vlan key collision: same vlan_id used by rule " +
+                        std::to_string(it->second) + " and rule " +
+                        std::to_string(cr.rule.rule_id));
+                break;
+            }
+            }
+        }
+    }
 
     // L4: duplicate protocol+port → last-write-wins in BPF hash map
     {

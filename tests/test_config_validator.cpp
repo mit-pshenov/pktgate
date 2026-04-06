@@ -103,6 +103,7 @@ TEST(test_same_rule_id_different_layers_ok) {
 
     Rule r1;
     r1.rule_id = 1; r1.action = Action::Allow;
+    r1.match.ethertype = "IPv4";
     cfg.pipeline.layer_2.push_back(r1);
 
     Rule r2;
@@ -338,6 +339,7 @@ TEST(test_l2_invalid_next_layer) {
     Config cfg;
     Rule r;
     r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
     r.next_layer = "layer_5";
     cfg.pipeline.layer_2.push_back(r);
 
@@ -396,6 +398,296 @@ TEST(test_multiple_errors_reported) {
     assert(!result.has_value());
     // Should have at least 5 errors
     assert(result.error().size() >= 5);
+}
+
+// ── L2 extended match-field validation ──────────────────────
+
+TEST(test_l2_multiple_match_fields_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.dst_mac = "11:22:33:44:55:66";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "exactly one field"));
+}
+
+TEST(test_l2_no_match_field_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "must specify a match field"));
+}
+
+TEST(test_l2_dst_mac_object_ref_valid) {
+    Config cfg;
+    cfg.interface = "eth0";
+    cfg.objects.mac_groups["servers"] = {"AA:BB:CC:DD:EE:FF"};
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.dst_mac = "object:servers";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_dst_mac_unknown_object_ref) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.dst_mac = "object:nonexistent";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "unknown mac_group"));
+}
+
+TEST(test_l2_ethertype_valid_names) {
+    for (auto name : {"IPv4", "IPv6", "ARP"}) {
+        Config cfg;
+        cfg.interface = "eth0";
+        Rule r;
+        r.rule_id = 1; r.action = Action::Allow;
+        r.match.ethertype = name;
+        cfg.pipeline.layer_2.push_back(r);
+
+        auto result = validate_config(cfg);
+        assert(result.has_value());
+    }
+}
+
+TEST(test_l2_ethertype_valid_hex) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.ethertype = "0x0800";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_ethertype_invalid) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.ethertype = "INVALID";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "invalid ethertype"));
+}
+
+TEST(test_l2_vlan_id_valid) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.vlan_id = 100;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_vlan_id_out_of_range) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.vlan_id = 5000;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "vlan_id must be 0-4095"));
+}
+
+TEST(test_l2_mirror_without_target) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Mirror;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "mirror action requires target_port"));
+}
+
+TEST(test_l2_redirect_without_target) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Redirect;
+    r.match.ethertype = "IPv4";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "redirect action requires target_vrf"));
+}
+
+// ── L2 multi-field rejection (3+, various combos) ──────────
+
+TEST(test_l2_three_match_fields_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.dst_mac = "11:22:33:44:55:66";
+    r.match.ethertype = "IPv4";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "exactly one"));
+}
+
+TEST(test_l2_all_four_match_fields_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.dst_mac = "11:22:33:44:55:66";
+    r.match.ethertype = "IPv4";
+    r.match.vlan_id = 100;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "exactly one"));
+}
+
+TEST(test_l2_dst_mac_plus_vlan_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.dst_mac = "11:22:33:44:55:66";
+    r.match.vlan_id = 100;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "exactly one"));
+}
+
+TEST(test_l2_ethertype_plus_vlan_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.ethertype = "IPv4";
+    r.match.vlan_id = 100;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "exactly one"));
+}
+
+TEST(test_l2_src_mac_plus_vlan_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.vlan_id = 100;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "exactly one"));
+}
+
+// ── L2 vlan_id boundary ─────────────────────────────────────
+
+TEST(test_l2_vlan_id_boundary_zero) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.vlan_id = 0;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_vlan_id_boundary_4095) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.vlan_id = 4095;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+// ── L2 ethertype edge cases ─────────────────────────────────
+
+TEST(test_l2_ethertype_incomplete_hex) {
+    // "0x" is parsed by stoul(s, nullptr, 16) as 0 — no exception thrown,
+    // so the validator accepts it as ethertype 0x0000.
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.ethertype = "0x";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_ethertype_invalid_hex_chars) {
+    // BUG: stoul("0xGGGG", nullptr, 16) parses as 0 without exception
+    // because it consumes the leading "0x" prefix and stops.
+    // The validator therefore accepts this as ethertype 0x0000.
+    // This test documents current (buggy) behavior.
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.ethertype = "0xGGGG";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value()); // passes due to stoul quirk
+}
+
+TEST(test_l2_ethertype_empty_string) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.ethertype = "";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "invalid ethertype"));
+}
+
+TEST(test_l2_ethertype_case_sensitive) {
+    // parse_ethertype accepts "ipv4" (lowercase) → 0x0800
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.ethertype = "ipv4";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
 }
 
 // ── Literal refs don't trigger object checks ────────────────

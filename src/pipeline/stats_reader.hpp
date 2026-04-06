@@ -95,7 +95,7 @@ public:
             (unsigned long long)totals[STAT_DROP_ENTRY_TAIL],
             (unsigned long long)totals[STAT_DROP_L2_BOUNDS],
             (unsigned long long)totals[STAT_DROP_L2_NO_META],
-            (unsigned long long)totals[STAT_DROP_L2_NO_MAC],
+            (unsigned long long)totals[STAT_DROP_L2_NO_MATCH],
             (unsigned long long)totals[STAT_DROP_L2_TAIL],
             (unsigned long long)totals[STAT_DROP_L3_BOUNDS],
             (unsigned long long)totals[STAT_DROP_L3_NOT_IPV4],

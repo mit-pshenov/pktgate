@@ -11,6 +11,18 @@
 
 namespace pktgate::compiler {
 
+/* ── Layer 2 compiled rules ───────────────────────────────── */
+
+enum class L2MatchType { SrcMac, DstMac, Ethertype, Vlan };
+
+struct CompiledL2Rule {
+    L2MatchType          type;
+    struct mac_key       mac;    // for SrcMac / DstMac
+    struct ethertype_key ether;  // for Ethertype
+    struct vlan_key      vlan;   // for Vlan
+    struct l2_rule       rule;
+};
+
 /* Compiled L3 rule: subnet key → l3_rule */
 struct CompiledL3Rule {
     struct lpm_v4_key subnet_key;
@@ -32,6 +44,7 @@ struct CompiledL4Rule {
 };
 
 struct CompiledRules {
+    std::vector<CompiledL2Rule>   l2_rules;
     std::vector<CompiledL3Rule>   l3_rules;
     std::vector<CompiledL3v6Rule> l3v6_rules;
     std::vector<CompiledL4Rule>   l4_rules;

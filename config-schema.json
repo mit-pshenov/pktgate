@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mit-pshenov/pktgate/config-schema.json",
+  "title": "pktgate configuration",
+  "description": "Configuration schema for the pktgate eBPF packet filter pipeline",
+  "type": "object",
+  "properties": {
+    "device_info": {
+      "type": "object",
+      "description": "Network device and link parameters",
+      "properties": {
+        "interface": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Network interface name (e.g. eth0, veth-pktgate, Gi-0/1)",
+          "examples": ["eth0", "veth-pktgate", "Gi-0/1"]
+        },
+        "capacity": {
+          "$ref": "#/$defs/bandwidth",
+          "description": "Link capacity"
+        }
+      },
+      "additionalProperties": false
+    },
+    "objects": {
+      "type": "object",
+      "description": "Reusable named objects referenced by rules via object: / object6: prefix",
+      "properties": {
+        "subnets": {
+          "type": "object",
+          "description": "Named IPv4 subnets in CIDR notation",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+          }
+        },
+        "subnets6": {
+          "type": "object",
+          "description": "Named IPv6 subnets in CIDR notation",
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F:]+/[0-9]{1,3}$"
+          }
+        },
+        "mac_groups": {
+          "type": "object",
+          "description": "Named groups of MAC addresses",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"
+            },
+            "minItems": 1
+          }
+        },
+        "port_groups": {
+          "type": "object",
+          "description": "Named groups of destination ports",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "minItems": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "pipeline": {
+      "type": "object",
+      "description": "Ordered processing layers: L2 -> L3 -> L4",
+      "properties": {
+        "layer_2": {
+          "type": "array",
+          "description": "Ethernet-level rules (match on src_mac)",
+          "items": { "$ref": "#/$defs/rule_l2" }
+        },
+        "layer_3": {
+          "type": "array",
+          "description": "IP/VRF-level rules (match on src/dst IP, VRF)",
+          "items": { "$ref": "#/$defs/rule_l3" }
+        },
+        "layer_4": {
+          "type": "array",
+          "description": "Transport-level rules (match on protocol + dst_port)",
+          "items": { "$ref": "#/$defs/rule_l4" }
+        }
+      },
+      "required": ["layer_2", "layer_3", "layer_4"],
+      "additionalProperties": false
+    },
+    "default_behavior": {
+      "$ref": "#/$defs/action",
+      "description": "Action when no rule matches (default: drop)"
+    }
+  },
+  "required": ["pipeline"],
+  "additionalProperties": false,
+
+  "$defs": {
+    "action": {
+      "type": "string",
+      "enum": ["allow", "drop", "mirror", "redirect", "tag", "rate-limit"]
+    },
+
+    "bandwidth": {
+      "type": "string",
+      "pattern": "^[0-9]+(Gbps|gbps|Mbps|mbps|Kbps|kbps|bps)$",
+      "examples": ["10Gbps", "100Mbps", "500Kbps", "1000bps"]
+    },
+
+    "dscp_name": {
+      "type": "string",
+      "enum": [
+        "EF",
+        "AF11", "AF12", "AF13",
+        "AF21", "AF22", "AF23",
+        "AF31", "AF32", "AF33",
+        "AF41", "AF42", "AF43",
+        "CS0", "CS1", "CS2", "CS3", "CS4", "CS5", "CS6", "CS7",
+        "BE"
+      ]
+    },
+
+    "object_ref": {
+      "type": "string",
+      "description": "Literal value or object reference (object:name)",
+      "examples": ["object:web_ports", "object:client_net", "10.0.0.0/24"]
+    },
+
+    "object6_ref": {
+      "type": "string",
+      "description": "Literal IPv6 CIDR or object reference (object6:name)",
+      "examples": ["object6:trusted_v6", "2001:db8::/32"]
+    },
+
+    "rule_base": {
+      "type": "object",
+      "properties": {
+        "rule_id": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unique rule identifier within the layer"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable rule description"
+        },
+        "action": {
+          "$ref": "#/$defs/action"
+        },
+        "action_params": {
+          "$ref": "#/$defs/action_params"
+        }
+      },
+      "required": ["rule_id", "action"]
+    },
+
+    "action_params": {
+      "type": "object",
+      "description": "Action-specific parameters",
+      "properties": {
+        "target_port": {
+          "type": "string",
+          "description": "Interface name for mirror target (required for action=mirror)"
+        },
+        "target_vrf": {
+          "type": "string",
+          "description": "VRF name for redirect destination (required for action=redirect)"
+        },
+        "dscp": {
+          "$ref": "#/$defs/dscp_name",
+          "description": "DSCP marking name (for action=tag)"
+        },
+        "cos": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7,
+          "description": "802.1p Class of Service value (for action=tag)"
+        },
+        "bandwidth": {
+          "$ref": "#/$defs/bandwidth",
+          "description": "Rate limit (required for action=rate-limit)"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "rule_l2": {
+      "description": "Layer 2 rule — Ethernet matching. Each rule must match on exactly one field.",
+      "allOf": [{ "$ref": "#/$defs/rule_base" }],
+      "properties": {
+        "rule_id": true,
+        "description": true,
+        "action": true,
+        "action_params": true,
+        "match": {
+          "type": "object",
+          "properties": {
+            "src_mac": {
+              "$ref": "#/$defs/object_ref",
+              "description": "Source MAC — literal or object:mac_group_name"
+            },
+            "dst_mac": {
+              "$ref": "#/$defs/object_ref",
+              "description": "Destination MAC — literal or object:mac_group_name"
+            },
+            "ethertype": {
+              "type": "string",
+              "description": "EtherType — name (IPv4, IPv6, ARP) or hex (0x0800)",
+              "pattern": "^(IPv4|IPv6|ARP|0x[0-9A-Fa-f]{4})$"
+            },
+            "vlan_id": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4095,
+              "description": "802.1Q VLAN ID"
+            }
+          },
+          "oneOf": [
+            { "required": ["src_mac"] },
+            { "required": ["dst_mac"] },
+            { "required": ["ethertype"] },
+            { "required": ["vlan_id"] }
+          ],
+          "additionalProperties": false
+        },
+        "next_layer": {
+          "type": "string",
+          "enum": ["layer_3", "layer_4"],
+          "description": "Forward matched packets to L3 or L4"
+        }
+      },
+      "required": ["rule_id", "action", "match"],
+      "additionalProperties": false
+    },
+
+    "rule_l3": {
+      "description": "Layer 3 rule — IP/VRF matching",
+      "allOf": [{ "$ref": "#/$defs/rule_base" }],
+      "properties": {
+        "rule_id": true,
+        "description": true,
+        "action": true,
+        "action_params": true,
+        "match": {
+          "type": "object",
+          "properties": {
+            "src_ip": {
+              "$ref": "#/$defs/object_ref",
+              "description": "Source IPv4 subnet — literal CIDR or object:subnet_name"
+            },
+            "dst_ip": {
+              "$ref": "#/$defs/object_ref",
+              "description": "Destination IPv4 subnet — literal CIDR or object:subnet_name"
+            },
+            "src_ip6": {
+              "$ref": "#/$defs/object6_ref",
+              "description": "Source IPv6 subnet — literal CIDR or object6:subnet_name"
+            },
+            "dst_ip6": {
+              "$ref": "#/$defs/object6_ref",
+              "description": "Destination IPv6 subnet — literal CIDR or object6:subnet_name"
+            },
+            "vrf": {
+              "type": "string",
+              "description": "VRF name to match"
+            }
+          },
+          "additionalProperties": false
+        },
+        "next_layer": {
+          "type": "string",
+          "enum": ["layer_4"],
+          "description": "Forward matched packets to L4"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "rule_l4": {
+      "description": "Layer 4 rule — transport matching (protocol + port required)",
+      "allOf": [{ "$ref": "#/$defs/rule_base" }],
+      "properties": {
+        "rule_id": true,
+        "description": true,
+        "action": true,
+        "action_params": true,
+        "match": {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "type": "string",
+              "enum": ["TCP", "tcp", "UDP", "udp"],
+              "description": "Transport protocol"
+            },
+            "dst_port": {
+              "$ref": "#/$defs/object_ref",
+              "description": "Destination port — literal (0-65535) or object:port_group_name"
+            }
+          },
+          "required": ["protocol", "dst_port"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["rule_id", "action", "match"],
+      "additionalProperties": false
+    }
+  }
+}

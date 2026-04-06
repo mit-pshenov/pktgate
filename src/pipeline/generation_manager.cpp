@@ -48,9 +48,18 @@ GenerationManager::install_programs(uint32_t gen) {
 
 std::expected<void, std::string>
 GenerationManager::clear_shadow_maps(uint32_t gen) {
-    // Clear hash maps using safe iteration
-    auto r = loader::MapManager::clear_hash_map(loader_.mac_allow_fd(gen));
-    if (!r) return std::unexpected("clear mac_allow: " + r.error());
+    // Clear L2 hash maps
+    auto r = loader::MapManager::clear_hash_map(loader_.l2_src_mac_fd(gen));
+    if (!r) return std::unexpected("clear l2_src_mac: " + r.error());
+
+    r = loader::MapManager::clear_hash_map(loader_.l2_dst_mac_fd(gen));
+    if (!r) return std::unexpected("clear l2_dst_mac: " + r.error());
+
+    r = loader::MapManager::clear_hash_map(loader_.l2_ethertype_fd(gen));
+    if (!r) return std::unexpected("clear l2_ethertype: " + r.error());
+
+    r = loader::MapManager::clear_hash_map(loader_.l2_vlan_fd(gen));
+    if (!r) return std::unexpected("clear l2_vlan: " + r.error());
 
     // LPM trie: delete tracked keys explicitly (iteration not supported)
     if (!lpm_keys_[gen].empty()) {
@@ -78,35 +87,39 @@ GenerationManager::clear_shadow_maps(uint32_t gen) {
 }
 
 std::expected<void, std::string>
-GenerationManager::populate_mac_map(uint32_t gen,
-                                     const compiler::CompiledObjects& objects) {
-    if (objects.macs.empty()) return {};
-    int fd = loader_.mac_allow_fd(gen);
+GenerationManager::populate_l2_maps(uint32_t gen,
+                                     const compiler::CompiledRules& rules) {
+    if (rules.l2_rules.empty()) return {};
 
-    // Try batch update first
-    std::vector<struct mac_key> keys;
-    std::vector<uint32_t> values;
-    keys.reserve(objects.macs.size());
-    values.reserve(objects.macs.size());
-    for (auto& mac : objects.macs) {
-        keys.push_back(mac.key);
-        values.push_back(mac.value);
+    for (auto& cr : rules.l2_rules) {
+        int fd = -1;
+        const void* key = nullptr;
+
+        switch (cr.type) {
+        case compiler::L2MatchType::SrcMac:
+            fd = loader_.l2_src_mac_fd(gen);
+            key = &cr.mac;
+            break;
+        case compiler::L2MatchType::DstMac:
+            fd = loader_.l2_dst_mac_fd(gen);
+            key = &cr.mac;
+            break;
+        case compiler::L2MatchType::Ethertype:
+            fd = loader_.l2_ethertype_fd(gen);
+            key = &cr.ether;
+            break;
+        case compiler::L2MatchType::Vlan:
+            fd = loader_.l2_vlan_fd(gen);
+            key = &cr.vlan;
+            break;
+        }
+
+        auto r = loader::MapManager::update_elem(fd, key, &cr.rule, BPF_ANY);
+        if (!r) return std::unexpected("L2 map insert (rule " +
+                                        std::to_string(cr.rule.rule_id) + "): " + r.error());
     }
 
-    auto br = loader::MapManager::batch_update(
-        fd, keys.data(), values.data(),
-        static_cast<uint32_t>(keys.size()), BPF_ANY);
-    if (br.has_value()) {
-        LOG_DBG("Batch populated mac_allow gen=%u: %zu entries", gen, keys.size());
-        return {};
-    }
-
-    // Fallback to sequential
-    for (auto& mac : objects.macs) {
-        auto r = loader::MapManager::update_elem(fd, &mac.key, &mac.value, BPF_ANY);
-        if (!r) return std::unexpected("mac_allow insert: " + r.error());
-    }
-    LOG_DBG("Populated mac_allow gen=%u: %zu entries", gen, objects.macs.size());
+    LOG_DBG("Populated L2 maps gen=%u: %zu entries", gen, rules.l2_rules.size());
     return {};
 }
 
@@ -217,7 +230,7 @@ GenerationManager::prepare(const compiler::CompiledObjects& objects,
     if (!r) return r;
 
     // Populate maps — if any step fails, clear what we've done
-    r = populate_mac_map(gen, objects);
+    r = populate_l2_maps(gen, rules);
     if (!r) {
         clear_shadow_maps(gen); // best-effort cleanup
         return r;

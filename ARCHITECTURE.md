@@ -166,20 +166,23 @@ drop/allow/redirect — используется чистый XDP. Если ес
 │ gen_config             │ ARRAY(1)             │ 0 → active_gen (__u32)       │
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
 │ prog_array_0/1         │ PROG_ARRAY(4)        │ layer_idx → prog_fd         │
-│ mac_allow_0/1          │ HASH(4096)           │ mac_key[8] → __u32 (1=ok)   │
+│ l2_src_mac_0/1         │ HASH(4096)           │ mac_key[8] → l2_rule        │
+│ l2_dst_mac_0/1         │ HASH(4096)           │ mac_key[8] → l2_rule        │
+│ l2_ethertype_0/1       │ HASH(64)             │ ethertype_key → l2_rule     │
+│ l2_vlan_0/1            │ HASH(4096)           │ vlan_key → l2_rule          │
 │ subnet_rules_0/1       │ LPM_TRIE(16384)      │ lpm_v4_key → l3_rule        │
 │ vrf_rules_0/1          │ HASH(256)            │ vrf_key → l3_rule            │
 │ l4_rules_0/1           │ HASH(4096)           │ l4_match_key → l4_rule       │
 │ default_action_0/1     │ ARRAY(1)             │ 0 → __u32 (filter_action)    │
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
 │ rate_state_map         │ PERCPU_HASH(4096)    │ rule_id → rate_state         │
-│ stats_map              │ PERCPU_ARRAY(37)     │ stat_key → __u64 (counter)   │
+│ stats_map              │ PERCPU_ARRAY(40)     │ stat_key → __u64 (counter)   │
 └────────────────────────┴──────────────────────┴──────────────────────────────┘
 
-Итого: 15 maps (2 shared + 6×2 double-buffered + 1 rate_state).
+Итого: 21 maps (2 shared + 9×2 double-buffered + 1 rate_state).
 Maps _0/_1 — двойная буферизация для generation swap.
 rate_state_map и stats_map общие (не буферизируются).
-stats_map — 37 per-CPU счётчиков: entry/L2/L3/L4 drops, pass/actions, TC mirror/tag, IPv6 L3/L4, fragment/proto drops (см. секцию 8).
+stats_map — 40 per-CPU счётчиков: entry/L2/L3/L4 drops, pass/actions, TC mirror/tag, IPv6 L3/L4, fragment/proto drops (см. секцию 8).
 ```
 
 **`pkt_meta`** — передаётся через XDP `data_meta` area (не через BPF map):
@@ -217,9 +220,11 @@ Metadata сохраняется при XDP_PASS → TC ingress transition.
 ```
 Generation 0 (active)          Generation 1 (shadow)
 ┌──────────────┐               ┌──────────────┐
-│ mac_allow_0  │               │ mac_allow_1  │  ← CP заполняет
-│ subnet_0     │               │ subnet_1     │     новыми данными
-│ rules_l3_0   │               │ rules_l3_1   │
+│ l2_src_mac_0 │               │ l2_src_mac_1 │  ← CP заполняет
+│ l2_dst_mac_0 │               │ l2_dst_mac_1 │     новыми данными
+│ l2_ether*_0  │               │ l2_ether*_1  │
+│ l2_vlan_0    │               │ l2_vlan_1    │
+│ subnet_0     │               │ subnet_1     │
 │ rules_l4_0   │               │ rules_l4_1   │
 │ prog_array_0 │               │ prog_array_1 │
 └──────┬───────┘               └──────┬───────┘
@@ -235,7 +240,7 @@ Generation 0 (active)          Generation 1 (shadow)
 ```
 1. Определить shadow generation: shadow = active ^ 1
 
-2. Заполнить все shadow maps (mac_allow_{shadow}, subnet_{shadow}, ...)
+2. Заполнить все shadow maps (l2_*_{shadow}, subnet_{shadow}, ...)
    — Можно делать сколько угодно долго, трафик идёт через active.
 
 3. Загрузить новые BPF-программы слоёв (если код изменился),
@@ -319,7 +324,7 @@ filter/
 │   ├── common.h                 ← общие структуры (mac_key, l3_rule, pkt_meta и т.д.)
 │   ├── maps.h                   ← все BPF map definitions (double-buffered)
 │   ├── entry.bpf.c              ← entry XDP program (generation dispatch)
-│   ├── layer2.bpf.c             ← L2 filter (MAC allow-list)
+│   ├── layer2.bpf.c             ← L2 filter (src/dst MAC, ethertype, VLAN)
 │   ├── layer3.bpf.c             ← L3 filter (LPM subnet + VRF, redirect/mirror)
 │   ├── layer4.bpf.c             ← L4 filter (protocol+port, tag/rate-limit)
 │   └── tc_ingress.bpf.c         ← TC ingress companion (mirror clone, DSCP rewrite)
@@ -546,7 +551,7 @@ enum stat_key {
     // Layer 2 drops
     STAT_DROP_L2_BOUNDS      = 4,    // packet too short for ETH header
     STAT_DROP_L2_NO_META     = 5,
-    STAT_DROP_L2_NO_MAC      = 6,    // src_mac not in allow-list
+    STAT_DROP_L2_NO_MATCH    = 6,    // no L2 rule matched
     STAT_DROP_L2_TAIL        = 7,    // tail_call to L3 failed
 
     // Layer 3 drops
@@ -590,7 +595,12 @@ enum stat_key {
     STAT_DROP_L3_V6_FRAGMENT = 35,   // IPv6 fragment header at L3
     STAT_DROP_L4_V6_FRAGMENT = 36,   // IPv6 fragment after ext headers in L4
 
-    STAT__MAX                = 37,
+    // L2 extended
+    STAT_DROP_L2_RULE        = 37,   // explicit DROP in L2 rule
+    STAT_PASS_L2             = 38,   // L2 rule ALLOW (terminal, no next_layer)
+    STAT_DROP_L2_REDIRECT_FAIL = 39, // L2 redirect with ifindex=0
+
+    STAT__MAX                = 40,
 };
 ```
 

@@ -51,7 +51,7 @@ static constexpr MetricDesc kMetrics[] = {
      nullptr, "counter"},
     {STAT_DROP_L2_NO_META,        "pktgate_drop_total{layer=\"l2\",reason=\"no_meta\"}",
      nullptr, "counter"},
-    {STAT_DROP_L2_NO_MAC,         "pktgate_drop_total{layer=\"l2\",reason=\"no_mac\"}",
+    {STAT_DROP_L2_NO_MATCH,       "pktgate_drop_total{layer=\"l2\",reason=\"no_match\"}",
      nullptr, "counter"},
     {STAT_DROP_L2_TAIL,           "pktgate_drop_total{layer=\"l2\",reason=\"tail_fail\"}",
      nullptr, "counter"},
@@ -124,6 +124,14 @@ static constexpr MetricDesc kMetrics[] = {
     {STAT_DROP_L3_V6_FRAGMENT,    "pktgate_drop_total{layer=\"l3v6\",reason=\"fragment\"}",
      nullptr, "counter"},
     {STAT_DROP_L4_V6_FRAGMENT,    "pktgate_drop_total{layer=\"l4\",reason=\"v6_fragment\"}",
+     nullptr, "counter"},
+
+    // ── L2 extended ──
+    {STAT_DROP_L2_RULE,           "pktgate_drop_total{layer=\"l2\",reason=\"rule\"}",
+     nullptr, "counter"},
+    {STAT_PASS_L2,                "pktgate_pass_total{layer=\"l2\"}",
+     nullptr, "counter"},
+    {STAT_DROP_L2_REDIRECT_FAIL,  "pktgate_drop_total{layer=\"l2\",reason=\"redirect_fail\"}",
      nullptr, "counter"},
 };
 

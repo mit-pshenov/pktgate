@@ -1,6 +1,7 @@
 #include "compiler/object_compiler.hpp"
 #include "compiler/rule_compiler.hpp"
 #include "config/config_parser.hpp"
+#include <arpa/inet.h>
 #include <bpf/libbpf.h>
 #include <cassert>
 #include <iostream>
@@ -868,6 +869,379 @@ TEST(test_struct_layout_mac_key) {
 
 TEST(test_struct_layout_l4_match_key) {
     static_assert(sizeof(struct l4_match_key) == 4, "l4_match_key should be 4 bytes");
+}
+
+// ── L2 rule compilation ─────────────────────────────────────
+
+TEST(test_l2_dst_mac_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.dst_mac = "AA:BB:CC:DD:EE:FF";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+}
+
+TEST(test_l2_ethertype_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.ethertype = "IPv4";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
+    assert(result->l2_rules[0].ether.ethertype == htons(0x0800));
+}
+
+TEST(test_l2_ethertype_hex_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.ethertype = "0x0806";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
+    assert(result->l2_rules[0].ether.ethertype == htons(0x0806));
+}
+
+TEST(test_l2_vlan_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.vlan_id = 100;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
+    assert(result->l2_rules[0].vlan.vlan_id == 100);
+}
+
+TEST(test_l2_dst_mac_group_expansion) {
+    config::ObjectStore objects;
+    objects.mac_groups["grp"] = {
+        "AA:BB:CC:DD:EE:FF",
+        "11:22:33:44:55:66",
+        "DE:AD:BE:EF:00:01"
+    };
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.dst_mac = "object:grp";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 3);
+    for (auto& cr : result->l2_rules)
+        assert(cr.type == compiler::L2MatchType::DstMac);
+}
+
+TEST(test_l2_collision_same_src_mac) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r1.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r2.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("L2 src_mac key collision") != std::string::npos);
+    assert(result.error().find("rule 1") != std::string::npos);
+    assert(result.error().find("rule 2") != std::string::npos);
+}
+
+TEST(test_l2_collision_same_ethertype) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.ethertype = "IPv4";
+    r1.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.ethertype = "0x0800"; // same as IPv4
+    r2.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("L2 ethertype key collision") != std::string::npos);
+    assert(result.error().find("rule 1") != std::string::npos);
+    assert(result.error().find("rule 2") != std::string::npos);
+}
+
+TEST(test_l2_collision_same_vlan) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.vlan_id = 100;
+    r1.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.vlan_id = 100;
+    r2.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("L2 vlan key collision") != std::string::npos);
+    assert(result.error().find("rule 1") != std::string::npos);
+    assert(result.error().find("rule 2") != std::string::npos);
+}
+
+TEST(test_l2_no_collision_different_types) {
+    // Same MAC in src_mac and dst_mac → different map types, no collision
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r1.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.dst_mac = "AA:BB:CC:DD:EE:FF";
+    r2.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 2);
+}
+
+TEST(test_l2_action_fields_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.dst_mac = "AA:BB:CC:DD:EE:FF";
+    r.action = config::Action::Redirect;
+    r.params.target_vrf = "veth1";
+    pipeline.layer_2.push_back(r);
+
+    auto resolver = [](const std::string& name) -> uint32_t {
+        if (name == "veth1") return 42;
+        return 0;
+    };
+
+    auto result = compiler::compile_rules(pipeline, objects, resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].rule.action == 3); // ACT_REDIRECT
+    assert(result->l2_rules[0].rule.redirect_ifindex == 42);
+}
+
+// ── L2 boundary / negative tests ───────────────────────────
+
+TEST(test_l2_ethertype_ipv6_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.ethertype = "IPv6";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
+    assert(result->l2_rules[0].ether.ethertype == htons(0x86DD));
+}
+
+TEST(test_l2_ethertype_arp_name_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.ethertype = "ARP";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
+    assert(result->l2_rules[0].ether.ethertype == htons(0x0806));
+}
+
+TEST(test_l2_vlan_zero_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.vlan_id = 0;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
+    assert(result->l2_rules[0].vlan.vlan_id == 0);
+}
+
+TEST(test_l2_vlan_max_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.vlan_id = 4095;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
+    assert(result->l2_rules[0].vlan.vlan_id == 4095);
+}
+
+TEST(test_l2_mac_lowercase_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.dst_mac = "aa:bb:cc:dd:ee:ff";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+}
+
+TEST(test_l2_mac_mixed_case_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.dst_mac = "Aa:bB:Cc:dD:Ee:fF";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+}
+
+TEST(test_l2_single_mac_group_expansion) {
+    config::ObjectStore objects;
+    objects.mac_groups["grp"] = {"AA:BB:CC:DD:EE:FF"};
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.dst_mac = "object:grp";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+}
+
+TEST(test_l2_ethertype_hex_max_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.ethertype = "0xFFFF";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
+    assert(result->l2_rules[0].ether.ethertype == htons(0xFFFF));
+}
+
+TEST(test_l2_collision_ethertype_vlan_independent) {
+    // Ethertype value 100 and vlan_id 100 should NOT collide — tracked separately
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.ethertype = "0x0064"; // 100 in hex
+    r1.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.vlan_id = 100;
+    r2.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 2);
+}
+
+TEST(test_l2_next_layer_l4_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.dst_mac = "AA:BB:CC:DD:EE:FF";
+    r.action = config::Action::Allow;
+    r.next_layer = "layer_4";
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].rule.next_layer == 2); // LAYER_4_IDX
 }
 
 int main() {

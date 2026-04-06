@@ -31,21 +31,69 @@ struct {
     __type(value, __u32);
 } prog_array_1 SEC(".maps");
 
-/* ── Layer 2: MAC allow-list (one per generation) ─────────── */
+/* ── Layer 2: source MAC rules (one per generation) ──────── */
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_MAC_ENTRIES);
     __type(key, struct mac_key);
-    __type(value, __u32); /* 1 = allowed */
-} mac_allow_0 SEC(".maps");
+    __type(value, struct l2_rule);
+} l2_src_mac_0 SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_MAC_ENTRIES);
     __type(key, struct mac_key);
-    __type(value, __u32);
-} mac_allow_1 SEC(".maps");
+    __type(value, struct l2_rule);
+} l2_src_mac_1 SEC(".maps");
+
+/* ── Layer 2: destination MAC rules (one per generation) ──── */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_MAC_ENTRIES);
+    __type(key, struct mac_key);
+    __type(value, struct l2_rule);
+} l2_dst_mac_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_MAC_ENTRIES);
+    __type(key, struct mac_key);
+    __type(value, struct l2_rule);
+} l2_dst_mac_1 SEC(".maps");
+
+/* ── Layer 2: EtherType rules (one per generation) ────────── */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ETHERTYPE_ENTRIES);
+    __type(key, struct ethertype_key);
+    __type(value, struct l2_rule);
+} l2_ethertype_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ETHERTYPE_ENTRIES);
+    __type(key, struct ethertype_key);
+    __type(value, struct l2_rule);
+} l2_ethertype_1 SEC(".maps");
+
+/* ── Layer 2: VLAN ID rules (one per generation) ─────────── */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_VLAN_ENTRIES);
+    __type(key, struct vlan_key);
+    __type(value, struct l2_rule);
+} l2_vlan_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_VLAN_ENTRIES);
+    __type(key, struct vlan_key);
+    __type(value, struct l2_rule);
+} l2_vlan_1 SEC(".maps");
 
 /* ── Layer 3: Subnet LPM trie → rule index (one per gen) ── */
 

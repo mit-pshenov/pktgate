@@ -241,7 +241,7 @@ TEST(gen_reader_snapshot_consistent) {
             // This simulates that the stored gen is consistent.
             assert(gen == 0 || gen == 1);
             // "Use" gen for lookup (just verify it's still a valid number)
-            uint32_t mac_map = gen;  // would index mac_allow_{gen}
+            uint32_t mac_map = gen;  // would index l2_src_mac_{gen}
             uint32_t l4_map = gen;   // would index l4_rules_{gen}
             assert(mac_map == l4_map); // same gen for all lookups
         }

@@ -24,6 +24,8 @@
 #define MAX_PORT_ENTRIES    4096
 #define MAX_VRF_ENTRIES     256
 #define MAX_RATE_ENTRIES    4096
+#define MAX_ETHERTYPE_ENTRIES 64
+#define MAX_VLAN_ENTRIES    4096
 
 /* Layer indices inside prog_array */
 #define LAYER_2_IDX  0
@@ -81,7 +83,29 @@ struct vrf_key {
     __u32 ifindex;    /* VRF device ifindex */
 };
 
+/* EtherType lookup key */
+struct ethertype_key {
+    __u16 ethertype;  /* network byte order */
+    __u16 _pad;
+};
+
+/* VLAN ID lookup key */
+struct vlan_key {
+    __u16 vlan_id;    /* host byte order, 0-4095 */
+    __u16 _pad;
+};
+
 /* ── Rule structures ───────────────────────────────────────── */
+
+/* Layer 2 rule — stored as value in L2 hash maps */
+struct l2_rule {
+    __u32 rule_id;
+    __u32 action;           /* enum filter_action */
+    __u32 redirect_ifindex; /* for ACT_REDIRECT */
+    __u32 mirror_ifindex;   /* for ACT_MIRROR   */
+    __u8  next_layer;       /* 0=terminal, LAYER_3_IDX, LAYER_4_IDX */
+    __u8  _pad[3];
+};
 
 /* Layer 3 rule — stored in rules array, indexed by LPM/VRF lookup */
 struct l3_rule {
@@ -135,8 +159,11 @@ enum stat_key {
     /* Layer 2 */
     STAT_DROP_L2_BOUNDS      = 4,
     STAT_DROP_L2_NO_META     = 5,
-    STAT_DROP_L2_NO_MAC      = 6,
+    STAT_DROP_L2_NO_MATCH    = 6,   /* no L2 rule matched (was NO_MAC) */
     STAT_DROP_L2_TAIL        = 7,
+    STAT_DROP_L2_RULE        = 37,  /* explicit DROP action in L2 rule */
+    STAT_PASS_L2             = 38,  /* L2 rule matched, pass/allow */
+    STAT_DROP_L2_REDIRECT_FAIL = 39,
 
     /* Layer 3 */
     STAT_DROP_L3_BOUNDS      = 8,
@@ -179,7 +206,7 @@ enum stat_key {
     STAT_DROP_L3_V6_FRAGMENT = 35,   /* IPv6 fragment header detected, dropped */
     STAT_DROP_L4_V6_FRAGMENT = 36,   /* IPv6 fragment after ext headers in L4 */
 
-    STAT__MAX                = 37,
+    STAT__MAX                = 40,
 };
 
 #define MAX_STATS STAT__MAX

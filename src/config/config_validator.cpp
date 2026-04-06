@@ -36,8 +36,38 @@ static void validate_l2_rules(const std::vector<Rule>& rules,
         auto& r = rules[i];
         std::string ctx = "layer_2[" + std::to_string(i) + "]";
 
+        // L2 rule must match on exactly one field
+        int match_count = 0;
+        if (r.match.src_mac)   ++match_count;
+        if (r.match.dst_mac)   ++match_count;
+        if (r.match.ethertype) ++match_count;
+        if (r.match.vlan_id)   ++match_count;
+
+        if (match_count == 0)
+            errs.push_back({ctx, "L2 rule must specify a match field (src_mac, dst_mac, ethertype, or vlan_id)"});
+        else if (match_count > 1)
+            errs.push_back({ctx, "L2 rule must match on exactly one field"});
+
         if (r.match.src_mac)
             check_object_ref(*r.match.src_mac, "mac_group", objects.mac_groups, ctx, errs);
+        if (r.match.dst_mac)
+            check_object_ref(*r.match.dst_mac, "mac_group", objects.mac_groups, ctx, errs);
+
+        if (r.match.ethertype) {
+            try { parse_ethertype(*r.match.ethertype); }
+            catch (...) {
+                errs.push_back({ctx, "invalid ethertype: " + *r.match.ethertype});
+            }
+        }
+
+        if (r.match.vlan_id && *r.match.vlan_id > 4095)
+            errs.push_back({ctx, "vlan_id must be 0-4095"});
+
+        if (r.action == Action::Mirror && !r.params.target_port)
+            errs.push_back({ctx, "mirror action requires target_port"});
+
+        if (r.action == Action::Redirect && !r.params.target_vrf)
+            errs.push_back({ctx, "redirect action requires target_vrf"});
 
         if (r.next_layer && *r.next_layer != "layer_3" && *r.next_layer != "layer_4")
             errs.push_back({ctx, "invalid next_layer: " + *r.next_layer});

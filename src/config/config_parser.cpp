@@ -13,7 +13,15 @@ static Rule parse_rule(const json& j) {
 
     if (j.contains("match")) {
         auto& m = j["match"];
-        if (m.contains("src_mac"))   r.match.src_mac   = m["src_mac"].get<std::string>();
+        if (m.contains("src_mac"))    r.match.src_mac    = m["src_mac"].get<std::string>();
+        if (m.contains("dst_mac"))    r.match.dst_mac    = m["dst_mac"].get<std::string>();
+        if (m.contains("ethertype"))  r.match.ethertype  = m["ethertype"].get<std::string>();
+        if (m.contains("vlan_id")) {
+            auto val = m["vlan_id"].get<int>();
+            if (val < 0 || val > 4095)
+                throw std::invalid_argument("vlan_id out of range 0-4095: " + std::to_string(val));
+            r.match.vlan_id = static_cast<uint16_t>(val);
+        }
         if (m.contains("src_ip"))    r.match.src_ip    = m["src_ip"].get<std::string>();
         if (m.contains("dst_ip"))    r.match.dst_ip    = m["dst_ip"].get<std::string>();
         if (m.contains("src_ip6"))   r.match.src_ip6   = m["src_ip6"].get<std::string>();

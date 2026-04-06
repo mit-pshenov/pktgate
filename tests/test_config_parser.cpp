@@ -314,6 +314,226 @@ TEST(test_parse_port_65535_in_group) {
     assert(result->objects.port_groups.at("high")[0] == 65535);
 }
 
+// ── L2 extended fields: dst_mac, ethertype, vlan_id ────────
+
+TEST(test_l2_dst_mac_parsing) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"dst_mac": "AA:BB:CC:DD:EE:FF"},
+            "next_layer": "layer_3"
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.dst_mac == "AA:BB:CC:DD:EE:FF");
+}
+
+TEST(test_l2_dst_mac_object_ref) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"dst_mac": "object:routers"},
+            "next_layer": "layer_3"
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.dst_mac == "object:routers");
+}
+
+TEST(test_l2_ethertype_parsing) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"ethertype": "IPv4"},
+            "next_layer": "layer_3"
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.ethertype == "IPv4");
+}
+
+TEST(test_l2_ethertype_hex_parsing) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"ethertype": "0x0800"},
+            "next_layer": "layer_3"
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.ethertype == "0x0800");
+}
+
+TEST(test_l2_vlan_id_parsing) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"vlan_id": 100},
+            "next_layer": "layer_3"
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.vlan_id == 100);
+}
+
+TEST(test_l2_vlan_id_zero) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"vlan_id": 0}
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.vlan_id.has_value());
+    assert(result->pipeline.layer_2[0].match.vlan_id == 0);
+}
+
+TEST(test_l2_vlan_id_max) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"vlan_id": 4095}
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.vlan_id == 4095);
+}
+
+TEST(test_l2_all_new_fields_in_separate_rules) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [
+            {"rule_id": 1, "action": "allow", "match": {"dst_mac": "00:11:22:33:44:55"}},
+            {"rule_id": 2, "action": "allow", "match": {"ethertype": "ARP"}},
+            {"rule_id": 3, "action": "drop",  "match": {"vlan_id": 200}}
+        ], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    auto& l2 = result->pipeline.layer_2;
+    assert(l2.size() == 3);
+    assert(l2[0].match.dst_mac == "00:11:22:33:44:55");
+    assert(l2[1].match.ethertype == "ARP");
+    assert(l2[2].match.vlan_id == 200);
+}
+
+TEST(test_l2_dst_mac_with_action_params) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "mirror",
+            "match": {"dst_mac": "FF:FF:FF:FF:FF:FF"},
+            "action_params": {"target_port": "Eth-1/5"}
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.dst_mac == "FF:FF:FF:FF:FF:FF");
+    assert(result->pipeline.layer_2[0].params.target_port == "Eth-1/5");
+}
+
+// ── Negative: vlan_id boundary / type tests ────────────────
+
+TEST(test_parse_vlan_id_out_of_range_4096) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop", "match": {"vlan_id": 4096}}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(!result.has_value());
+}
+
+TEST(test_parse_vlan_id_negative) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop", "match": {"vlan_id": -1}}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(!result.has_value());
+}
+
+TEST(test_parse_vlan_id_large) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop", "match": {"vlan_id": 65536}}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(!result.has_value());
+}
+
+TEST(test_parse_vlan_id_as_string) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop", "match": {"vlan_id": "abc"}}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(!result.has_value());
+}
+
+// ── Edge: empty strings and missing match ──────────────────
+
+TEST(test_parse_dst_mac_empty_string) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop", "match": {"dst_mac": ""}}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.dst_mac.has_value());
+    assert(result->pipeline.layer_2[0].match.dst_mac.value() == "");
+}
+
+TEST(test_parse_ethertype_empty_string) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop", "match": {"ethertype": ""}}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.ethertype.has_value());
+    assert(result->pipeline.layer_2[0].match.ethertype.value() == "");
+}
+
+TEST(test_parse_l2_rule_no_match_object) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop"}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(result.has_value());
+    auto& m = result->pipeline.layer_2[0].match;
+    assert(!m.src_mac.has_value());
+    assert(!m.dst_mac.has_value());
+    assert(!m.ethertype.has_value());
+    assert(!m.vlan_id.has_value());
+}
+
+TEST(test_parse_l2_rule_empty_match_object) {
+    auto result = parse_config_string(R"({
+        "pipeline": {
+            "layer_2": [{"rule_id": 1, "action": "drop", "match": {}}],
+            "layer_3": [],
+            "layer_4": []
+        }
+    })");
+    assert(result.has_value());
+    auto& m = result->pipeline.layer_2[0].match;
+    assert(!m.src_mac.has_value());
+    assert(!m.dst_mac.has_value());
+    assert(!m.ethertype.has_value());
+    assert(!m.vlan_id.has_value());
+}
+
 int main() {
     int passed = 0, failed = 0;
     for (auto& [name, fn] : tests) {

@@ -29,6 +29,9 @@ struct ObjectStore {
 
 struct MatchCriteria {
     std::optional<std::string> src_mac;    // literal or "object:xxx"
+    std::optional<std::string> dst_mac;    // literal or "object:xxx"
+    std::optional<std::string> ethertype;  // "0x0800", "IPv4", "IPv6", "ARP"
+    std::optional<uint16_t>    vlan_id;    // 0-4095
     std::optional<std::string> src_ip;     // literal IPv4 CIDR or "object:xxx"
     std::optional<std::string> dst_ip;
     std::optional<std::string> src_ip6;    // literal IPv6 CIDR or "object6:xxx"
@@ -120,6 +123,20 @@ inline uint8_t dscp_from_name(const std::string& name) {
     if (name == "CS7")  return 56;
     if (name == "BE")   return 0;
     throw std::invalid_argument("Unknown DSCP name: " + name);
+}
+
+/// Parse ethertype from name or hex string → value in host byte order.
+inline uint16_t parse_ethertype(const std::string& s) {
+    if (s == "IPv4" || s == "ipv4") return 0x0800;
+    if (s == "IPv6" || s == "ipv6") return 0x86DD;
+    if (s == "ARP"  || s == "arp")  return 0x0806;
+    if (s.starts_with("0x") || s.starts_with("0X")) {
+        unsigned long val = std::stoul(s, nullptr, 16);
+        if (val > 0xFFFF)
+            throw std::invalid_argument("EtherType out of range: " + s);
+        return static_cast<uint16_t>(val);
+    }
+    throw std::invalid_argument("Unknown ethertype: " + s);
 }
 
 inline uint64_t parse_bandwidth(const std::string& s) {
