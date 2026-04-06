@@ -5,7 +5,7 @@
 | Компонент        | Статус            | Требуется                          |
 |------------------|-------------------|------------------------------------|
 | Kernel           | 6.1.0-43 (OK)    | >= 5.15 для BPF_MAP_TYPE_LPM_TRIE, tail calls, atomic ops |
-| clang            | ✅ установлен     | `clang-16` или новее               |
+| clang            | ✅ установлен     | `clang-19` (CI), `clang-16`+ для local build |
 | libbpf-dev       | ✅ установлен     | `libbpf-dev >= 1.1`                |
 | bpftool          | ✅ установлен     | `bpftool` (генерация skeleton)     |
 | linux-headers    | ✅ установлен     | `linux-headers-$(uname -r)`        |
@@ -47,7 +47,8 @@ apt install -y clang-16 llvm-16 libbpf-dev bpftool \
 │  ┌─────────────────────────────────────────────────────┐ │
 │  │              Shared BPF Maps                        │ │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │ │
-│  │  │ MAC hash │ │ LPM trie │ │Port hash │            │ │
+│  │  │ L2 hash  │ │ LPM trie │ │Port hash │            │ │
+│  │  │(4 types) │ │(subnet)  │ │ (L4)     │            │ │
 │  │  └──────────┘ └──────────┘ └──────────┘            │ │
 │  └─────────────────────────────────────────────────────┘ │
 │                                                          │
@@ -84,12 +85,27 @@ Entry XDP program
 ### 3.2. Layer 2 — Ethernet Filtering
 
 ```c
-// Ключ: MAC-адрес (6 байт, выровнен до 8)
-struct mac_key { __u8 addr[8]; };
+// 4 hash maps проверяются в фиксированном порядке (first match wins):
+//   src_mac → dst_mac → ethertype → vlan_id
+//
+// Ключи:
+struct mac_key       { __u8 addr[6]; __u8 _pad[2]; };  // src/dst MAC
+struct ethertype_key { __u16 ethertype; __u16 _pad; };  // NBO
+struct vlan_key      { __u16 vlan_id;  __u16 _pad; };   // host byte order
 
-// BPF_MAP_TYPE_HASH — mac_groups
-// Lookup src_mac → если нет совпадения → XDP_DROP
-// Если match → tail_call(LAYER_3)
+// Значение — полноценное правило с action:
+struct l2_rule {
+    __u32 rule_id;
+    __u32 action;            // ACT_ALLOW/DROP/REDIRECT/MIRROR
+    __u32 redirect_ifindex;
+    __u32 mirror_ifindex;
+    __u8  next_layer;        // 0=terminal, LAYER_3_IDX, LAYER_4_IDX
+    __u8  _pad[3];
+};
+
+// 802.1Q parsing: если h_proto == 0x8100, извлекается vlan_id
+// и inner ethertype. QinQ (0x88a8) не парсится.
+// No match → tail_call(LAYER_3) (backward compat)
 ```
 
 ### 3.3. Layer 3 — IP / VRF Filtering
@@ -342,8 +358,8 @@ filter/
 │   ├── compiler/
 │   │   ├── object_compiler.hpp  ← ObjectStore → CompiledObjects (MAC hash, LPM, ports)
 │   │   ├── object_compiler.cpp
-│   │   ├── rule_compiler.hpp    ← Pipeline → CompiledRules (L3/L4 BPF entries)
-│   │   └── rule_compiler.cpp    ← port group expansion, key collision detection, rate/ncpus
+│   │   ├── rule_compiler.hpp    ← Pipeline → CompiledRules (L2/L3/L4 BPF entries)
+│   │   └── rule_compiler.cpp    ← L2 rule compilation, port group expansion, key collision detection, rate/ncpus
 │   │
 │   ├── loader/
 │   │   ├── bpf_loader.hpp       ← libbpf skeleton wrapper (4 programs, map reuse)
@@ -363,21 +379,24 @@ filter/
 │       ├── net_types.hpp        ← MacAddr, Ipv4Prefix (parse + NBO), resolve_ifindex
 │       └── log.hpp              ← lightweight printf-based logging
 │
-├── tests/                       ← 334 теста в 15 сьютах
-│   ├── test_config_parser.cpp       (24 теста)  — JSON парсинг, DSCP, bandwidth
-│   ├── test_config_validation.cpp   (30 тестов) — edge cases, все action/DSCP types
-│   ├── test_config_validator.cpp    (27 тестов) — семантика: refs, duplicates, params
-│   ├── test_object_compiler.cpp     (14 тестов) — MAC/subnet/port компиляция
-│   ├── test_rule_compiler_edge.cpp  (47 тестов) — refs, expansion, collisions, layout
-│   ├── test_net_types.cpp           (26 тестов) — MacAddr, Ipv4Prefix парсинг
-│   ├── test_generation_logic.cpp    (15 тестов) — state machine генераций
-│   ├── test_pipeline_integration.cpp (22 теста) — E2E compile, stress 500+ rules
-│   ├── test_byte_layout.cpp         (31 тест)  — map key/value byte-level
-│   ├── test_packet_builder.cpp      (17 тестов) — ETH/IP/TCP/UDP headers
-│   ├── test_roundtrip.cpp           (17 тестов) — parse → validate → compile → verify
-│   ├── test_stress.cpp              (9 тестов)  — 4096 rules, 16K subnets
-│   ├── test_concurrency.cpp         (13 тестов) — multi-threaded gen swap
-│   ├── bpf/test_bpf_dataplane.cpp   (23 теста)  — BPF_PROG_TEST_RUN (requires sudo)
+├── tests/                       ← 466 тестов в 17 сьютах
+│   ├── test_config_parser.cpp       (41 тест)   — JSON парсинг, DSCP, bandwidth, L2 fields
+│   ├── test_config_validation.cpp   (30 тестов)  — edge cases, все action/DSCP types
+│   ├── test_config_validator.cpp    (51 тест)    — семантика: refs, duplicates, params, L2 extended
+│   ├── test_object_compiler.cpp     (14 тестов)  — MAC/subnet/port компиляция
+│   ├── test_rule_compiler_edge.cpp  (67 тестов)  — refs, expansion, collisions, layout, L2 rules
+│   ├── test_net_types.cpp           (26 тестов)  — MacAddr, Ipv4Prefix парсинг
+│   ├── test_generation_logic.cpp    (15 тестов)  — state machine генераций
+│   ├── test_pipeline_integration.cpp (27 тестов) — E2E compile, reload, stress 500+ rules
+│   ├── test_byte_layout.cpp         (31 тест)   — map key/value byte-level
+│   ├── test_packet_builder.cpp      (17 тестов)  — ETH/IP/TCP/UDP headers
+│   ├── test_roundtrip.cpp           (17 тестов)  — parse → validate → compile → verify
+│   ├── test_stress.cpp              (9 тестов)   — 4096 rules, 16K subnets
+│   ├── test_concurrency.cpp         (13 тестов)  — multi-threaded gen swap
+│   ├── test_ipv6.cpp                (52 теста)   — IPv6 prefixes, byte layout, dual-stack
+│   ├── test_fault_injection.cpp     (13 тестов)  — truncation, byte flip, mutation
+│   ├── test_prometheus.cpp          (7 тестов)   — HTTP /metrics, concurrent scrapes
+│   ├── bpf/test_bpf_dataplane.cpp   (36 тестов)  — BPF_PROG_TEST_RUN (requires sudo)
 │   └── bench_compile.cpp           — бенчмарк: small/medium/large конфиги
 │
 ├── systemd/
@@ -508,7 +527,7 @@ ConfigValidator::validate()        → семантические проверк
     │
     ▼
 ObjectCompiler::compile_objects()  → CompiledObjects (MAC hash, LPM trie keys, port lists)
-RuleCompiler::compile_rules()      → CompiledRules (L3: subnet+VRF, L4: expanded по портам)
+RuleCompiler::compile_rules()      → CompiledRules (L2: 4 match types, L3: subnet+VRF, L4: expanded по портам)
     │
     ▼
 GenerationManager::prepare()       → clear shadow maps → batch populate → install progs
@@ -622,9 +641,15 @@ kill -USR1 $(pidof pktgate_ctl)
 
 | Тип коллизии | Ключ | Пример |
 |-------------|------|--------|
+| L2 src_mac | `mac_key` | Два правила на один и тот же src_mac (literal или через mac_group) |
+| L2 dst_mac | `mac_key` | Два правила на один и тот же dst_mac |
+| L2 ethertype | `ethertype_key` | "IPv4" и "0x0800" — одно значение в NBO |
+| L2 vlan | `vlan_key` | Два правила на один vlan_id |
 | L4 | `protocol + dst_port` | Два правила на TCP:80 (одно literal, другое через port group) |
 | L3 subnet | `prefixlen + addr` | Два объекта с одним CIDR `10.0.0.0/8` |
 | L3 VRF | `ifindex` | Два VRF имени, разрешающихся в один ifindex |
+
+L2 коллизии отслеживаются **по типу** — один и тот же MAC в src_mac и dst_mac правилах не коллидирует (разные maps).
 
 При обнаружении — ошибка компиляции с указанием обоих rule_id.
 
@@ -705,8 +730,8 @@ while (g_running) {
    + SIGHUP для перезагрузки конфига. Debounce 150ms + проверка непустого файла защищают
    от гонок при atomic save (vim, sed -i). Ошибки парсинга/деплоя не трогают активную генерацию.
 
-8. ~~**BPF_PROG_TEST_RUN тесты**~~ → **Реализовано** (фаза 7): 23 data plane теста
-   (L2/L3/L4/pipeline/bench) через `bpf_prog_test_run_opts()`, плюс live тест на veth.
+8. ~~**BPF_PROG_TEST_RUN тесты**~~ → **Реализовано** (фаза 7+18): 36 data plane тестов
+   (L2 extended/L3/L4/pipeline/bench) через `bpf_prog_test_run_opts()` с `ctx_in` для data_meta, плюс live тест на veth.
 
 9. **LPM_TRIE не поддерживает итерацию**: `subnet_rules_0/1` — LPM_TRIE с
    `BPF_F_NO_PREALLOC`. Ядро не поддерживает `bpf_map_get_next_key` для этого типа.
@@ -742,22 +767,23 @@ while (g_running) {
 | 15 | Functional tests: pytest+scapy, 84 теста через реальный XDP трафик на veth | ✅ Завершена |
 | 16 | Audit: IPv6 stats/fragments, reload race guard, CI/CD, README | ✅ Завершена |
 | 17 | Mirror/redirect e2e tests, fuzz CI (smoke + overnight), TEST_PLAN.md | ✅ Завершена |
+| 18 | L2 extended filtering: dst_mac, ethertype, vlan_id — full stack + 71 тест | ✅ Завершена |
 
-**Тесты: 500+ test points** (17 ctest targets + 104 functional + 3 fuzz harnesses).
+**Тесты: 570+ test points** (17 ctest targets / 466 тестов + 104 functional + 3 fuzz harnesses).
 Полный тест-план: [TEST_PLAN.md](TEST_PLAN.md).
 
 ### Тестовые наборы
 
 | Suite | Тестов | Категория |
 |-------|--------|-----------|
-| config_parser | 24 | JSON parsing, error handling |
+| config_parser | 41 | JSON parsing, error handling, L2 field parsing |
 | object_compiler | 14 | MAC/subnet/port compilation |
 | generation_logic | 15 | Generation state machine, rollback |
 | net_types | 26 | IP/MAC parsing, CIDR, utilities |
 | config_validation | 30 | Config validation (negative) |
-| rule_compiler_edge | 47 | Rule compiler edge cases, key collision detection |
+| rule_compiler_edge | 67 | Rule compiler edge cases, key collision detection, L2 rules |
 | pipeline_integration | 27 | E2E pipeline, reload, stress 500+ rules |
-| config_validator | 27 | Semantic validation |
+| config_validator | 51 | Semantic validation, L2 match field constraints |
 | byte_layout | 31 | Map key/value byte-level verification |
 | packet_builder | 17 | ETH/IP/TCP/UDP header correctness |
 | roundtrip | 17 | Parse → validate → compile → verify |
@@ -765,7 +791,7 @@ while (g_running) {
 | concurrency | 13 | Multi-threaded gen swap, double-buffer |
 | fault_injection | 13 | Truncation, byte flip, random mutation, edge-case inputs |
 | ipv6 | 52 | IPv6 prefix parsing, byte layout, rule compilation, dual-stack, config, validation |
-| bpf_dataplane | 23 | BPF_PROG_TEST_RUN (L2/L3/L4/pipeline/bench, requires sudo) |
+| bpf_dataplane | 36 | BPF_PROG_TEST_RUN (L2 extended/L3/L4/pipeline/bench, requires sudo) |
 | prometheus | 7 | HTTP /metrics, concurrent scrapes, metric coverage |
 
 ### Functional тесты (pytest + scapy, 104 теста)
@@ -775,7 +801,7 @@ while (g_running) {
 
 | Файл | Тестов | Что проверяет |
 |------|--------|---------------|
-| test_l2_mac | 8 | MAC allow/deny, broadcast, spoofing |
+| test_l2_mac | 8 | MAC src/dst match, broadcast, spoofing |
 | test_l3_subnet | 15 | IPv4 subnet LPM, CIDR, multi-rule |
 | test_l3_ipv6 | 10 | IPv6 fragments, extension headers, L4 parsing |
 | test_l4_ports | 16 | TCP/UDP port match, port groups |
