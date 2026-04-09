@@ -1,5 +1,8 @@
 # TEST_PLAN.md — pktgate Test Plan
 
+For config format see [CONFIG.md](CONFIG.md). For architecture internals see
+[ARCHITECTURE.md](ARCHITECTURE.md). For build instructions see [README.md](README.md).
+
 ## Сводка
 
 | Категория | Файлов | Тестов | Привилегии | Время |

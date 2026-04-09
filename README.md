@@ -27,7 +27,8 @@ NIC → [XDP entry] → tail_call → [L2 MAC] → [L3 IP/LPM] → [L4 port]
 - **Control plane**: C++23, libbpf skeleton API, double-buffered maps
 - **Zero map lookups** between layers — packet metadata passed through XDP `data_meta` area
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design document.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the internal design: BPF programs,
+map layout, tail call chain, generation swap mechanism.
 
 ## Build
 
@@ -91,6 +92,9 @@ JSON config defines objects (MACs, subnets, port groups) and a layered pipeline:
   "default_behavior": "drop"
 }
 ```
+
+See [CONFIG.md](CONFIG.md) for the full configuration reference: all match fields,
+actions, TCP flags syntax, DSCP names, compound rules, and limits.
 
 See [sample2.json](sample2.json) for a complete example with all action types.
 

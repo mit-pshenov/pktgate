@@ -1,5 +1,8 @@
 # ARCHITECTURE.md — eBPF Packet Filter Pipeline
 
+Internal design document for developers. For user-facing config format see
+[CONFIG.md](CONFIG.md). For build and usage see [README.md](README.md).
+
 ## 1. Обзор среды и зависимости
 
 | Компонент        | Статус            | Требуется                          |
