@@ -286,6 +286,135 @@ TEST(roundtrip_single_rule_minimal) {
     assert(cr->l3_rules[0].subnet_key.addr == 0);
 }
 
+// ═══════════════════════════════════════════════════════════
+// L2 compound rules + PCP round-trip
+// ═══════════════════════════════════════════════════════════
+
+TEST(roundtrip_compound_l2_src_mac_vlan) {
+    auto cfg = config::parse_config_string(R"({
+        "device_info": {"interface": "eth0"},
+        "objects": {"mac_groups": {"servers": ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"]}},
+        "pipeline": {
+            "layer_2": [{
+                "rule_id": 1, "action": "allow",
+                "match": {"src_mac": "object:servers", "vlan_id": 100},
+                "next_layer": "layer_3"
+            }],
+            "layer_3": [], "layer_4": []
+        }
+    })");
+    assert(cfg.has_value());
+    auto v = config::validate_config(*cfg);
+    assert(v.has_value());
+    auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
+    assert(cr.has_value());
+    assert(cr->l2_rules.size() == 2);  // 2 MACs expanded
+    for (auto& entry : cr->l2_rules) {
+        assert(entry.type == compiler::L2MatchType::SrcMac);
+        assert(entry.rule.filter_mask & L2_FILTER_VLAN);
+        assert(entry.rule.filter_vlan_id == 100);
+        assert(entry.rule.next_layer == 1);  // LAYER_3_IDX
+    }
+}
+
+TEST(roundtrip_pcp_only) {
+    auto cfg = config::parse_config_string(R"({
+        "device_info": {"interface": "eth0"},
+        "pipeline": {
+            "layer_2": [{
+                "rule_id": 10, "action": "drop",
+                "match": {"pcp": 0}
+            }],
+            "layer_3": [], "layer_4": []
+        }
+    })");
+    assert(cfg.has_value());
+    auto v = config::validate_config(*cfg);
+    assert(v.has_value());
+    auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
+    assert(cr.has_value());
+    assert(cr->l2_rules.size() == 1);
+    assert(cr->l2_rules[0].type == compiler::L2MatchType::Pcp);
+    assert(cr->l2_rules[0].pcp.pcp == 0);
+    assert(cr->l2_rules[0].rule.action == ACT_DROP);
+    assert(cr->l2_rules[0].rule.filter_mask == 0);
+}
+
+TEST(roundtrip_backward_compat) {
+    // Old-style single-field rules still work unchanged
+    auto cfg = config::parse_config_string(R"({
+        "device_info": {"interface": "eth0"},
+        "pipeline": {
+            "layer_2": [
+                {"rule_id": 1, "action": "allow", "match": {"ethertype": "IPv4"}, "next_layer": "layer_3"},
+                {"rule_id": 2, "action": "drop", "match": {"vlan_id": 666}}
+            ],
+            "layer_3": [], "layer_4": []
+        }
+    })");
+    assert(cfg.has_value());
+    auto v = config::validate_config(*cfg);
+    assert(v.has_value());
+    auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
+    assert(cr.has_value());
+    assert(cr->l2_rules.size() == 2);
+    assert(cr->l2_rules[0].rule.filter_mask == 0);
+    assert(cr->l2_rules[1].rule.filter_mask == 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L4 TCP flags round-trip
+// ═══════════════════════════════════════════════════════════
+
+TEST(roundtrip_tcp_flags_syn_not_ack) {
+    auto cfg = config::parse_config_string(R"({
+        "device_info": {"interface": "eth0"},
+        "pipeline": {
+            "layer_4": [{
+                "rule_id": 500,
+                "match": {"protocol": "TCP", "dst_port": "80", "tcp_flags": "SYN,!ACK"},
+                "action": "drop"
+            }]
+        }
+    })");
+    assert(cfg.has_value());
+    auto v = config::validate_config(*cfg);
+    assert(v.has_value());
+    auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
+    assert(cr.has_value());
+    assert(cr->l4_rules.size() == 1);
+    auto& r = cr->l4_rules[0];
+    assert(r.rule.rule_id == 500);
+    assert(r.rule.action == ACT_DROP);
+    assert(r.match.protocol == 6);
+    assert(r.match.dst_port == 80);
+    assert(r.rule.tcp_flags_set == 0x02);   // SYN
+    assert(r.rule.tcp_flags_unset == 0x10); // !ACK
+}
+
+TEST(roundtrip_l4_backward_compat) {
+    // L4 rules without tcp_flags still compile with flags=0 (match any)
+    auto cfg = config::parse_config_string(R"({
+        "device_info": {"interface": "eth0"},
+        "pipeline": {
+            "layer_4": [
+                {"rule_id": 600, "match": {"protocol": "TCP", "dst_port": "443"}, "action": "allow"},
+                {"rule_id": 601, "match": {"protocol": "UDP", "dst_port": "53"}, "action": "allow"}
+            ]
+        }
+    })");
+    assert(cfg.has_value());
+    auto v = config::validate_config(*cfg);
+    assert(v.has_value());
+    auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
+    assert(cr.has_value());
+    assert(cr->l4_rules.size() == 2);
+    for (auto& r : cr->l4_rules) {
+        assert(r.rule.tcp_flags_set == 0);
+        assert(r.rule.tcp_flags_unset == 0);
+    }
+}
+
 int main() {
     int passed = 0, failed = 0;
     for (auto& [name, fn] : tests) {

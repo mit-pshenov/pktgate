@@ -402,7 +402,7 @@ TEST(test_multiple_errors_reported) {
 
 // ── L2 extended match-field validation ──────────────────────
 
-TEST(test_l2_multiple_match_fields_rejected) {
+TEST(test_l2_src_dst_mac_rejected) {
     Config cfg;
     Rule r;
     r.rule_id = 1; r.action = Action::Allow;
@@ -412,7 +412,7 @@ TEST(test_l2_multiple_match_fields_rejected) {
 
     auto result = validate_config(cfg);
     assert(!result.has_value());
-    assert(has_error(result.error(), "exactly one field"));
+    assert(has_error(result.error(), "src_mac and dst_mac cannot be combined"));
 }
 
 TEST(test_l2_no_match_field_rejected) {
@@ -539,7 +539,8 @@ TEST(test_l2_redirect_without_target) {
 
 // ── L2 multi-field rejection (3+, various combos) ──────────
 
-TEST(test_l2_three_match_fields_rejected) {
+TEST(test_l2_src_dst_mac_plus_ethertype_rejected) {
+    // src_mac + dst_mac always rejected, even with other fields
     Config cfg;
     Rule r;
     r.rule_id = 1; r.action = Action::Allow;
@@ -550,10 +551,10 @@ TEST(test_l2_three_match_fields_rejected) {
 
     auto result = validate_config(cfg);
     assert(!result.has_value());
-    assert(has_error(result.error(), "exactly one"));
+    assert(has_error(result.error(), "src_mac and dst_mac cannot be combined"));
 }
 
-TEST(test_l2_all_four_match_fields_rejected) {
+TEST(test_l2_src_dst_mac_plus_all_rejected) {
     Config cfg;
     Rule r;
     r.rule_id = 1; r.action = Action::Allow;
@@ -565,11 +566,12 @@ TEST(test_l2_all_four_match_fields_rejected) {
 
     auto result = validate_config(cfg);
     assert(!result.has_value());
-    assert(has_error(result.error(), "exactly one"));
+    assert(has_error(result.error(), "src_mac and dst_mac cannot be combined"));
 }
 
-TEST(test_l2_dst_mac_plus_vlan_rejected) {
+TEST(test_l2_compound_dst_mac_vlan_valid) {
     Config cfg;
+    cfg.interface = "eth0";
     Rule r;
     r.rule_id = 1; r.action = Action::Allow;
     r.match.dst_mac = "11:22:33:44:55:66";
@@ -577,12 +579,12 @@ TEST(test_l2_dst_mac_plus_vlan_rejected) {
     cfg.pipeline.layer_2.push_back(r);
 
     auto result = validate_config(cfg);
-    assert(!result.has_value());
-    assert(has_error(result.error(), "exactly one"));
+    assert(result.has_value());
 }
 
-TEST(test_l2_ethertype_plus_vlan_rejected) {
+TEST(test_l2_compound_ethertype_vlan_valid) {
     Config cfg;
+    cfg.interface = "eth0";
     Rule r;
     r.rule_id = 1; r.action = Action::Allow;
     r.match.ethertype = "IPv4";
@@ -590,12 +592,12 @@ TEST(test_l2_ethertype_plus_vlan_rejected) {
     cfg.pipeline.layer_2.push_back(r);
 
     auto result = validate_config(cfg);
-    assert(!result.has_value());
-    assert(has_error(result.error(), "exactly one"));
+    assert(result.has_value());
 }
 
-TEST(test_l2_src_mac_plus_vlan_rejected) {
+TEST(test_l2_compound_src_mac_vlan_valid) {
     Config cfg;
+    cfg.interface = "eth0";
     Rule r;
     r.rule_id = 1; r.action = Action::Allow;
     r.match.src_mac = "AA:BB:CC:DD:EE:FF";
@@ -603,8 +605,71 @@ TEST(test_l2_src_mac_plus_vlan_rejected) {
     cfg.pipeline.layer_2.push_back(r);
 
     auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_compound_src_mac_ethertype_valid) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.ethertype = "IPv4";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_compound_vlan_pcp_valid) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.vlan_id = 100;
+    r.match.pcp = 6;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_compound_three_fields_valid) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.ethertype = "IPv4";
+    r.match.vlan_id = 100;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_pcp_only_valid) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.pcp = 5;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l2_pcp_out_of_range_validator) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.pcp = 8;
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
     assert(!result.has_value());
-    assert(has_error(result.error(), "exactly one"));
+    assert(has_error(result.error(), "pcp must be 0-7"));
 }
 
 // ── L2 vlan_id boundary ─────────────────────────────────────
@@ -727,6 +792,77 @@ TEST(test_literal_port_no_check) {
 
     auto result = validate_config(cfg);
     assert(result.has_value());
+}
+
+// ── TCP flags validation ────────────────────────────────────
+
+TEST(test_l4_tcp_flags_valid) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "SYN,!ACK";
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l4_tcp_flags_without_protocol_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "SYN";
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    // Should fail on missing protocol (existing check) or tcp_flags+non-TCP
+}
+
+TEST(test_l4_tcp_flags_with_udp_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.protocol = "UDP";
+    r.match.dst_port = "53";
+    r.match.tcp_flags = "SYN";
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "tcp_flags requires protocol TCP"));
+}
+
+TEST(test_l4_tcp_flags_invalid_format) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "BOGUS";
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "invalid tcp_flags"));
+}
+
+TEST(test_l4_tcp_flags_empty_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "";
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "invalid tcp_flags"));
 }
 
 int main() {

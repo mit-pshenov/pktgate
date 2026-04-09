@@ -60,14 +60,17 @@ struct PacketBuilder {
     }
 
     /// Add TCP header (minimal)
-    PacketBuilder& tcp(uint16_t src_port, uint16_t dst_port) {
+    PacketBuilder& tcp(uint16_t src_port, uint16_t dst_port, uint8_t flags = 0) {
         size_t off = buf.size();
         buf.resize(off + sizeof(struct tcphdr));
         struct tcphdr h{};
         h.source = htons(src_port);
         h.dest = htons(dst_port);
         h.doff = 5;
+        // Set flags via raw byte at offset 13 within the TCP header
         memcpy(buf.data() + off, &h, sizeof(h));
+        if (flags)
+            buf[off + 13] = flags;
         return *this;
     }
 
@@ -243,6 +246,16 @@ static void setup_standard_config(pktgate::loader::BpfLoader& loader, uint32_t g
     l4r_rate.action = ACT_RATE_LIMIT;
     l4r_rate.rate_bps = 1000000000ULL;
     r = MM::update_elem(loader.l4_rules_fd(gen), &l4_tcp443, &l4r_rate, BPF_ANY);
+    assert(r.has_value());
+
+    // --- L4 rules: TCP:8080 → ALLOW only SYN,!ACK ---
+    struct l4_match_key l4_tcp8080 = { .protocol = 6, ._pad = 0, .dst_port = 8080 };
+    struct l4_rule l4r_syn{};
+    l4r_syn.rule_id = 103;
+    l4r_syn.action = ACT_ALLOW;
+    l4r_syn.tcp_flags_set = TCPF_SYN;
+    l4r_syn.tcp_flags_unset = TCPF_ACK;
+    r = MM::update_elem(loader.l4_rules_fd(gen), &l4_tcp8080, &l4r_syn, BPF_ANY);
     assert(r.has_value());
 
     // --- Default action: DROP ---
@@ -499,6 +512,75 @@ TEST(test_l4_no_rule_default_drop) {
     auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
     assert(res.ok);
     assert(res.retval == XDP_DROP);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L4 TCP Flags Tests
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l4_tcp_flags_syn_match) {
+    // TCP:8080 with SYN flag → rule matches (SYN set, ACK not set)
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 8080, TCPF_SYN)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);  // ALLOW
+}
+
+TEST(test_l4_tcp_flags_syn_not_ack_match) {
+    // TCP:8080 with SYN only → matches "SYN,!ACK" rule
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 8080, TCPF_SYN)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+TEST(test_l4_tcp_flags_syn_not_ack_mismatch) {
+    // TCP:8080 with SYN+ACK → fails "SYN,!ACK" rule → default DROP
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 8080, TCPF_SYN | TCPF_ACK)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);  // flags mismatch → default action
+}
+
+TEST(test_l4_tcp_flags_backward_compat) {
+    // TCP:80 rule has no tcp_flags → matches any TCP packet regardless of flags
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80, TCPF_SYN | TCPF_ACK | TCPF_FIN)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);  // ALLOW — no flags check
+}
+
+TEST(test_l4_tcp_flags_udp_unaffected) {
+    // UDP:53 rule has no tcp_flags → still matches normally
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_UDP)
+        .udp(1234, 53)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);  // TAG action returns PASS
 }
 
 TEST(test_l4_non_tcpudp_default) {
@@ -997,6 +1079,558 @@ TEST(test_l2_qinq_not_parsed) {
     auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
     assert(res.ok);
     assert(res.retval == XDP_DROP); // QinQ not parsed → L3 → non-IPv4 → DROP
+}
+
+// ═══════════════════════════════════════════════════════════
+// Additional L2 Tests
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l2_pcp_match_drop) {
+    // PCP primary lookup: VLAN-tagged packet with PCP=5 → PCP rule → DROP.
+    using MM = pktgate::loader::MapManager;
+
+    struct pcp_key pk{};
+    pk.pcp = 5;
+    struct l2_rule drop_rule{};
+    drop_rule.rule_id = 900;
+    drop_rule.action = ACT_DROP;
+    auto r = MM::update_elem(loader.l2_pcp_fd(0), &pk, &drop_rule, BPF_ANY);
+    assert(r.has_value());
+
+    // Build 802.1Q tagged packet with PCP=5, VID=100
+    // PCP occupies bits 15-13 of TCI, VID is bits 11-0
+    // TCI = (PCP << 13) | VID = (5 << 13) | 100 = 0xA064
+    PacketBuilder pkt;
+    struct ethhdr eh{};
+    memcpy(eh.h_source, UNKNOWN_MAC, 6);
+    memcpy(eh.h_dest, DST_MAC, 6);
+    eh.h_proto = htons(0x8100);
+    pkt.buf.resize(sizeof(eh));
+    memcpy(pkt.buf.data(), &eh, sizeof(eh));
+
+    uint16_t tci = htons((5 << 13) | 100);
+    pkt.buf.push_back(static_cast<uint8_t>(tci >> 8));
+    pkt.buf.push_back(static_cast<uint8_t>(tci & 0xFF));
+
+    uint16_t inner_proto = htons(ETH_P_IP);
+    pkt.buf.push_back(static_cast<uint8_t>(inner_proto >> 8));
+    pkt.buf.push_back(static_cast<uint8_t>(inner_proto & 0xFF));
+
+    pkt.pad(64);
+
+    auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // dropped by PCP rule
+
+    MM::delete_elem(loader.l2_pcp_fd(0), &pk);
+}
+
+TEST(test_l2_secondary_ethertype_mismatch) {
+    // src_mac ALLOW rule with L2_FILTER_ETHERTYPE=IPv4. Send IPv6 from that MAC.
+    // Secondary filter fails → rule doesn't match → falls through.
+    // No other rule matches → tail to L3 → L3 sees 0x86DD → IPv6 path → no subnet6 → default DROP.
+    using MM = pktgate::loader::MapManager;
+
+    uint8_t test_src[6] = {0x02, 0x00, 0x00, 0x00, 0xFF, 0x01};
+    struct mac_key mk{};
+    memcpy(mk.addr, test_src, 6);
+    struct l2_rule allow_rule{};
+    allow_rule.rule_id = 901;
+    allow_rule.action = ACT_ALLOW;
+    allow_rule.next_layer = 0; // terminal allow
+    allow_rule.filter_mask = L2_FILTER_ETHERTYPE;
+    allow_rule.filter_ethertype = htons(0x0800); // expect IPv4
+    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mk, &allow_rule, BPF_ANY);
+    assert(r.has_value());
+
+    // Send IPv6 packet (0x86DD) from that MAC
+    auto pkt = PacketBuilder()
+        .eth(test_src, DST_MAC, 0x86DD)
+        .pad(64);
+
+    auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    // Secondary ethertype filter rejects → no L2 match → tail to L3 → IPv6 path → no rule → default DROP
+    assert(res.retval == XDP_DROP);
+
+    MM::delete_elem(loader.l2_src_mac_fd(0), &mk);
+}
+
+TEST(test_l2_secondary_vlan_mismatch) {
+    // src_mac ALLOW rule with L2_FILTER_VLAN=200. Send VLAN 300 from that MAC.
+    // Secondary VLAN filter fails → rule doesn't match → falls through → DROP.
+    using MM = pktgate::loader::MapManager;
+
+    uint8_t test_src[6] = {0x02, 0x00, 0x00, 0x00, 0xFF, 0x02};
+    struct mac_key mk{};
+    memcpy(mk.addr, test_src, 6);
+    struct l2_rule allow_rule{};
+    allow_rule.rule_id = 902;
+    allow_rule.action = ACT_ALLOW;
+    allow_rule.next_layer = 0; // terminal allow
+    allow_rule.filter_mask = L2_FILTER_VLAN;
+    allow_rule.filter_vlan_id = 200; // expect VLAN 200 (host byte order, per BPF extraction)
+    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mk, &allow_rule, BPF_ANY);
+    assert(r.has_value());
+
+    // Build 802.1Q tagged packet with VID=300 (mismatch)
+    PacketBuilder pkt;
+    struct ethhdr eh{};
+    memcpy(eh.h_source, test_src, 6);
+    memcpy(eh.h_dest, DST_MAC, 6);
+    eh.h_proto = htons(0x8100);
+    pkt.buf.resize(sizeof(eh));
+    memcpy(pkt.buf.data(), &eh, sizeof(eh));
+
+    uint16_t tci = htons(300); // VID=300
+    pkt.buf.push_back(static_cast<uint8_t>(tci >> 8));
+    pkt.buf.push_back(static_cast<uint8_t>(tci & 0xFF));
+
+    uint16_t inner_proto = htons(ETH_P_IP);
+    pkt.buf.push_back(static_cast<uint8_t>(inner_proto >> 8));
+    pkt.buf.push_back(static_cast<uint8_t>(inner_proto & 0xFF));
+
+    pkt.pad(64);
+
+    auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    // Secondary VLAN filter fails → no L2 match → tail to L3 → 0x8100 is neither v4 nor v6 → DROP
+    assert(res.retval == XDP_DROP);
+
+    MM::delete_elem(loader.l2_src_mac_fd(0), &mk);
+}
+
+TEST(test_l2_mirror_action) {
+    // ACT_MIRROR sets action_flags and mirror_ifindex in metadata, then continues.
+    // Terminal mirror (next_layer=0) → XDP_PASS.
+    using MM = pktgate::loader::MapManager;
+
+    uint8_t mirr_src[6] = {0x02, 0x00, 0x00, 0x00, 0xFF, 0x03};
+    struct mac_key mk{};
+    memcpy(mk.addr, mirr_src, 6);
+    struct l2_rule mirr_rule{};
+    mirr_rule.rule_id = 903;
+    mirr_rule.action = ACT_MIRROR;
+    mirr_rule.mirror_ifindex = 42;
+    mirr_rule.next_layer = 0; // terminal
+    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mk, &mirr_rule, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(mirr_src, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS); // mirror is non-terminal: sets flags, then terminal ALLOW → PASS
+
+    MM::delete_elem(loader.l2_src_mac_fd(0), &mk);
+}
+
+TEST(test_l2_vlan_truncated_drop) {
+    // Packet with 0x8100 ethertype but too short for VLAN TCI (only 14 bytes of eth).
+    // Should fail the bounds check in L2 VLAN parsing → STAT_DROP_L2_BOUNDS → XDP_DROP.
+    PacketBuilder pkt;
+    struct ethhdr eh{};
+    memcpy(eh.h_source, UNKNOWN_MAC, 6);
+    memcpy(eh.h_dest, DST_MAC, 6);
+    eh.h_proto = htons(0x8100);
+    pkt.buf.resize(sizeof(eh));
+    memcpy(pkt.buf.data(), &eh, sizeof(eh));
+
+    // Only add 2 bytes (need 4: TCI + inner ethertype)
+    pkt.buf.push_back(0x00);
+    pkt.buf.push_back(0x64);
+    // Do NOT add inner ethertype — truncated
+
+    auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    if (!res.ok) {
+        // Some kernels reject packets this small
+        std::cout << "    [skip] kernel rejected truncated VLAN packet\n";
+        return;
+    }
+    assert(res.retval == XDP_DROP); // L2 bounds check fails for truncated VLAN
+}
+
+// ═══════════════════════════════════════════════════════════
+// Additional L3 Tests
+// ═══════════════════════════════════════════════════════════
+
+/// Helper: build a minimal IPv6 packet with given nexthdr and src/dst addresses.
+/// Returns a PacketBuilder with Ethernet + IPv6 header. Caller should add L4 or pad.
+static PacketBuilder build_ipv6_packet(const uint8_t src_mac[6], const uint8_t dst_mac[6],
+                                        uint8_t nexthdr,
+                                        const char* src_v6, const char* dst_v6,
+                                        uint16_t payload_len = 0) {
+    PacketBuilder pkt;
+    // Ethernet header
+    pkt.eth(src_mac, dst_mac, 0x86DD);
+
+    // IPv6 header (40 bytes)
+    size_t off = pkt.buf.size();
+    pkt.buf.resize(off + 40, 0);
+    uint8_t* ip6 = pkt.buf.data() + off;
+
+    // Version (4) + Traffic Class (8) + Flow Label (20) = first 4 bytes
+    ip6[0] = 0x60; // version=6, traffic class high nibble=0
+    ip6[1] = 0x00; // traffic class low + flow label high
+    ip6[2] = 0x00;
+    ip6[3] = 0x00;
+
+    // Payload length (2 bytes, network byte order)
+    uint16_t plen_nbo = htons(payload_len);
+    memcpy(ip6 + 4, &plen_nbo, 2);
+
+    // Next header
+    ip6[6] = nexthdr;
+
+    // Hop limit
+    ip6[7] = 64;
+
+    // Source address
+    struct in6_addr saddr{}, daddr{};
+    inet_pton(AF_INET6, src_v6, &saddr);
+    inet_pton(AF_INET6, dst_v6, &daddr);
+    memcpy(ip6 + 8, &saddr, 16);
+    memcpy(ip6 + 24, &daddr, 16);
+
+    return pkt;
+}
+
+TEST(test_l3_ipv6_lpm_match) {
+    // Add IPv6 subnet rule: 2001:db8::/32 → DROP. Send 2001:db8::1 → should match → DROP.
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v6_key lpm6_drop{};
+    lpm6_drop.prefixlen = 32;
+    // 2001:0db8:: → first 4 bytes = 0x20, 0x01, 0x0d, 0xb8
+    struct in6_addr net_addr{};
+    inet_pton(AF_INET6, "2001:db8::", &net_addr);
+    memcpy(lpm6_drop.addr, &net_addr, 16);
+
+    struct l3_rule l3_drop{};
+    l3_drop.rule_id = 300;
+    l3_drop.action = ACT_DROP;
+    auto r = MM::update_elem(loader.subnet6_rules_fd(0), &lpm6_drop, &l3_drop, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = build_ipv6_packet(KNOWN_MAC, DST_MAC, IPPROTO_TCP,
+                                  "2001:db8::1", "2001:db8::2", 20);
+    pkt.tcp(1234, 80);
+    pkt.pad(86); // eth(14) + ipv6(40) + tcp(20) + padding
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // IPv6 subnet match → DROP
+
+    MM::delete_elem(loader.subnet6_rules_fd(0), &lpm6_drop);
+}
+
+TEST(test_l3_ipv6_fragment_dropped) {
+    // IPv6 with nexthdr=44 (Fragment Header) → L3 drops immediately.
+    auto pkt = build_ipv6_packet(KNOWN_MAC, DST_MAC, 44, // nexthdr=44 (Fragment)
+                                  "2001:db8::1", "2001:db8::2", 8);
+    // Add 8 bytes of fragment header stub
+    for (int i = 0; i < 8; i++)
+        pkt.buf.push_back(0);
+    pkt.pad(64);
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // IPv6 fragment → dropped
+}
+
+TEST(test_l3_mirror_metadata) {
+    // ACT_MIRROR in L3 sets mirror_ifindex in metadata, packet continues.
+    // With has_next_layer=0 → terminal → XDP_PASS.
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v4_key lpm_mirr = { .prefixlen = 32, .addr = ip_nbo("172.20.0.1") };
+    struct l3_rule mirr_rule{};
+    mirr_rule.rule_id = 301;
+    mirr_rule.action = ACT_MIRROR;
+    mirr_rule.mirror_ifindex = 77;
+    mirr_rule.has_next_layer = 0; // terminal
+    auto r = MM::update_elem(loader.subnet_rules_fd(0), &lpm_mirr, &mirr_rule, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("172.20.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS); // MIRROR sets flags, terminal → PASS
+
+    MM::delete_elem(loader.subnet_rules_fd(0), &lpm_mirr);
+}
+
+TEST(test_l3_redirect_zero_ifindex) {
+    // ACT_REDIRECT with ifindex=0 → STAT_DROP_L3_REDIRECT_FAIL → XDP_DROP.
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v4_key lpm_redir = { .prefixlen = 32, .addr = ip_nbo("172.21.0.1") };
+    struct l3_rule redir_rule{};
+    redir_rule.rule_id = 302;
+    redir_rule.action = ACT_REDIRECT;
+    redir_rule.redirect_ifindex = 0; // invalid
+    auto r = MM::update_elem(loader.subnet_rules_fd(0), &lpm_redir, &redir_rule, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("172.21.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // redirect with ifindex=0 → DROP
+
+    MM::delete_elem(loader.subnet_rules_fd(0), &lpm_redir);
+}
+
+// ═══════════════════════════════════════════════════════════
+// Additional L4 Tests
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l4_ipv6_tcp_match) {
+    // IPv6 TCP:80 → matches existing TCP:80 ALLOW rule in L4.
+    auto pkt = build_ipv6_packet(KNOWN_MAC, DST_MAC, IPPROTO_TCP,
+                                  "2001:db8::10", "2001:db8::20", 20);
+    pkt.tcp(4321, 80);
+    pkt.pad(86);
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS); // TCP:80 ALLOW matches for IPv6 too
+}
+
+TEST(test_l4_ipv6_ext_header_chain) {
+    // IPv6 with Hop-by-Hop(0) + Routing(43) extension headers → TCP:80 → ALLOW.
+    // L4 should skip extension headers and find TCP.
+    PacketBuilder pkt;
+    pkt.eth(KNOWN_MAC, DST_MAC, 0x86DD);
+
+    // IPv6 header: nexthdr=0 (Hop-by-Hop Options)
+    size_t off = pkt.buf.size();
+    pkt.buf.resize(off + 40, 0);
+    uint8_t* ip6 = pkt.buf.data() + off;
+    ip6[0] = 0x60;
+    // Payload length: HbH(8) + Routing(8) + TCP(20) = 36
+    uint16_t plen = htons(36);
+    memcpy(ip6 + 4, &plen, 2);
+    ip6[6] = 0;   // nexthdr = Hop-by-Hop Options
+    ip6[7] = 64;  // hop limit
+    struct in6_addr saddr{}, daddr{};
+    inet_pton(AF_INET6, "2001:db8::10", &saddr);
+    inet_pton(AF_INET6, "2001:db8::20", &daddr);
+    memcpy(ip6 + 8, &saddr, 16);
+    memcpy(ip6 + 24, &daddr, 16);
+
+    // Hop-by-Hop extension header (8 bytes: nexthdr=43, len=0 → 8 bytes)
+    pkt.buf.push_back(43);  // next header = Routing
+    pkt.buf.push_back(0);   // header ext len = 0 → (0+1)*8 = 8 bytes total
+    for (int i = 0; i < 6; i++)
+        pkt.buf.push_back(0); // padding
+
+    // Routing extension header (8 bytes: nexthdr=6(TCP), len=0 → 8 bytes)
+    pkt.buf.push_back(6);   // next header = TCP
+    pkt.buf.push_back(0);   // header ext len = 0 → 8 bytes total
+    for (int i = 0; i < 6; i++)
+        pkt.buf.push_back(0); // padding
+
+    // TCP header (port 80)
+    pkt.tcp(4321, 80);
+    pkt.pad(96);
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS); // skipped ext headers → TCP:80 → ALLOW
+}
+
+TEST(test_l4_ipv6_fragment_after_ext) {
+    // IPv6 with Hop-by-Hop(0) ext → then nexthdr=44 (Fragment).
+    // L4 stops at fragment header and drops defensively.
+    PacketBuilder pkt;
+    pkt.eth(KNOWN_MAC, DST_MAC, 0x86DD);
+
+    // IPv6 header: nexthdr=0 (Hop-by-Hop)
+    size_t off = pkt.buf.size();
+    pkt.buf.resize(off + 40, 0);
+    uint8_t* ip6 = pkt.buf.data() + off;
+    ip6[0] = 0x60;
+    uint16_t plen = htons(16); // HbH(8) + Fragment(8)
+    memcpy(ip6 + 4, &plen, 2);
+    ip6[6] = 0;   // nexthdr = Hop-by-Hop
+    ip6[7] = 64;
+    struct in6_addr saddr{}, daddr{};
+    inet_pton(AF_INET6, "2001:db8::30", &saddr);
+    inet_pton(AF_INET6, "2001:db8::40", &daddr);
+    memcpy(ip6 + 8, &saddr, 16);
+    memcpy(ip6 + 24, &daddr, 16);
+
+    // Hop-by-Hop ext header: nexthdr=44 (Fragment), len=0 → 8 bytes
+    pkt.buf.push_back(44);  // next header = Fragment
+    pkt.buf.push_back(0);   // len=0 → 8 bytes
+    for (int i = 0; i < 6; i++)
+        pkt.buf.push_back(0);
+
+    // Fragment header stub (8 bytes)
+    for (int i = 0; i < 8; i++)
+        pkt.buf.push_back(0);
+
+    pkt.pad(80);
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // fragment after ext headers → DROP
+}
+
+TEST(test_l4_rate_limit_depletion) {
+    // Verify rate limiter drops when tokens are exhausted.
+    // rate_state_map is PERCPU — must write per-cpu values from userspace.
+    // Strategy: pre-populate rate_state with tokens=0, tiny rate (8000 bps = 1000 B/s),
+    // and recent last_refill. Even after 1s max refill, tokens=1 < packet size → DROP.
+
+    uint32_t rid = 102; // TCP:443 rule
+    bpf_map_delete_elem(loader.rate_state_fd(), &rid);
+
+    // Per-CPU map needs one value per CPU
+    int ncpus = libbpf_num_possible_cpus();
+    std::vector<struct rate_state> percpu_rs(ncpus);
+
+    // Get approximate ktime for last_refill
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+
+    for (int i = 0; i < ncpus; i++) {
+        percpu_rs[i].tokens = 0;
+        percpu_rs[i].last_refill = now_ns;
+        percpu_rs[i].rate_bps = 8000; // 1000 bytes/sec → max 1s refill = 1000 < 1414
+    }
+    bpf_map_update_elem(loader.rate_state_fd(), &rid, percpu_rs.data(), BPF_ANY);
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP, 1380)
+        .tcp(1234, 443);
+    pkt.pad(1414);
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+
+    bpf_map_delete_elem(loader.rate_state_fd(), &rid);
+}
+
+TEST(test_l4_tcp_flags_partial_mismatch) {
+    // Add rule for TCP:9090 requiring SYN+PSH set. Send packet with only SYN → default.
+    using MM = pktgate::loader::MapManager;
+
+    struct l4_match_key l4k = { .protocol = 6, ._pad = 0, .dst_port = 9090 };
+    struct l4_rule l4r{};
+    l4r.rule_id = 110;
+    l4r.action = ACT_ALLOW;
+    l4r.tcp_flags_set = TCPF_SYN | TCPF_PSH;  // require both SYN and PSH
+    auto r = MM::update_elem(loader.l4_rules_fd(0), &l4k, &l4r, BPF_ANY);
+    assert(r.has_value());
+
+    // Send only SYN (missing PSH) → flags_set check fails → default action
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 9090, TCPF_SYN) // only SYN, no PSH
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // flags mismatch → default DROP
+
+    // Also verify: SYN+PSH → ALLOW (positive check)
+    auto pkt2 = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 9090, TCPF_SYN | TCPF_PSH)
+        .pad();
+
+    res = run_xdp_prog(loader.layer4_prog_fd(), pkt2.data(), pkt2.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS); // SYN+PSH present → ALLOW
+
+    MM::delete_elem(loader.l4_rules_fd(0), &l4k);
+}
+
+// ═══════════════════════════════════════════════════════════
+// Additional Integration / Pipeline Tests
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_pipeline_ipv6_full_tcp80) {
+    // Full pipeline: Entry → L2 (no MAC match, fall through) → L3 (IPv6 no subnet6 match,
+    // no VRF → tail to L4) → L4 (IPv6 TCP:80 → ALLOW) → PASS.
+    auto pkt = build_ipv6_packet(UNKNOWN_MAC, DST_MAC, IPPROTO_TCP,
+                                  "fd00::1", "fd00::2", 20);
+    pkt.tcp(4321, 80);
+    pkt.pad(86);
+
+    auto res = run_xdp_prog(loader.entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_PASS); // IPv6 through full pipeline → TCP:80 ALLOW
+}
+
+TEST(test_pipeline_ipv6_fragment_dropped_at_l3) {
+    // Full pipeline: Entry → L2 (no match) → L3 (IPv6, nexthdr=44 Fragment) → DROP.
+    // Verifies that IPv6 fragment detection works through the full pipeline.
+    auto pkt = build_ipv6_packet(UNKNOWN_MAC, DST_MAC, 44, // Fragment header
+                                  "fd00::10", "fd00::20", 8);
+    for (int i = 0; i < 8; i++)
+        pkt.buf.push_back(0); // fragment header stub
+    pkt.pad(72);
+
+    auto res = run_xdp_prog(loader.entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_DROP); // IPv6 fragment dropped at L3
+}
+
+TEST(test_pipeline_l2_mirror_l3_continues) {
+    // L2 mirror rule + next_layer=L3: packet should have mirror flags set,
+    // then continue to L3→L4. Verify final verdict is based on L3/L4.
+    // Use KNOWN_MAC override with MIRROR + next_layer=L3.
+    using MM = pktgate::loader::MapManager;
+
+    // Save original KNOWN_MAC rule, replace with MIRROR + L3
+    struct mac_key mkey{};
+    memcpy(mkey.addr, KNOWN_MAC, 6);
+    struct l2_rule orig_rule{};
+    bpf_map_lookup_elem(loader.l2_src_mac_fd(0), &mkey, &orig_rule);
+
+    struct l2_rule mirr_rule{};
+    mirr_rule.rule_id = 910;
+    mirr_rule.action = ACT_MIRROR;
+    mirr_rule.mirror_ifindex = 99;
+    mirr_rule.next_layer = LAYER_3_IDX;
+    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mkey, &mirr_rule, BPF_ANY);
+    assert(r.has_value());
+
+    // 10.0.0.1 → L3 ALLOW+next → L4 TCP:80 → ALLOW → XDP_PASS
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.entry_prog_fd(), pkt.data(), pkt.size());
+    assert(res.ok);
+    assert(res.retval == XDP_PASS); // mirror sets flags, continues to L3→L4 → PASS
+
+    // Restore original rule
+    r = MM::update_elem(loader.l2_src_mac_fd(0), &mkey, &orig_rule, BPF_ANY);
+    assert(r.has_value());
 }
 
 // ═══════════════════════════════════════════════════════════

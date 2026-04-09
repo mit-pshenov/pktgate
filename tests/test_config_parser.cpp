@@ -534,6 +534,128 @@ TEST(test_parse_l2_rule_empty_match_object) {
     assert(!m.vlan_id.has_value());
 }
 
+TEST(test_parse_pcp_field) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"pcp": 6},
+            "next_layer": "layer_3"
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.pcp.has_value());
+    assert(result->pipeline.layer_2[0].match.pcp == 6);
+}
+
+TEST(test_parse_pcp_zero) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"pcp": 0}
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.pcp.has_value());
+    assert(result->pipeline.layer_2[0].match.pcp == 0);
+}
+
+TEST(test_parse_pcp_boundary_7) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"pcp": 7}
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_2[0].match.pcp == 7);
+}
+
+TEST(test_parse_pcp_out_of_range) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"pcp": 8}
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(!result.has_value());
+}
+
+TEST(test_parse_pcp_negative) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"pcp": -1}
+        }], "layer_3": [], "layer_4": [] }
+    })");
+    assert(!result.has_value());
+}
+
+TEST(test_parse_tcp_flags_syn) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [], "layer_3": [], "layer_4": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"protocol": "TCP", "dst_port": "80", "tcp_flags": "SYN"}
+        }] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_4[0].match.tcp_flags == "SYN");
+}
+
+TEST(test_parse_tcp_flags_syn_not_ack) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [], "layer_3": [], "layer_4": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"protocol": "TCP", "dst_port": "80", "tcp_flags": "SYN,!ACK"}
+        }] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_4[0].match.tcp_flags == "SYN,!ACK");
+}
+
+TEST(test_parse_tcp_flags_multiple) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [], "layer_3": [], "layer_4": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"protocol": "TCP", "dst_port": "80", "tcp_flags": "SYN,ACK"}
+        }] }
+    })");
+    assert(result.has_value());
+    assert(result->pipeline.layer_4[0].match.tcp_flags == "SYN,ACK");
+}
+
+TEST(test_parse_tcp_flags_all_names) {
+    // All 8 flag names should be recognized
+    for (auto name : {"FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR"}) {
+        auto result = parse_config_string(R"({
+            "pipeline": { "layer_2": [], "layer_3": [], "layer_4": [{
+                "rule_id": 1, "action": "allow",
+                "match": {"protocol": "TCP", "dst_port": "80", "tcp_flags": ")" + std::string(name) + R"("}
+            }] }
+        })");
+        assert(result.has_value());
+    }
+}
+
+TEST(test_parse_tcp_flags_empty_rejected) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [], "layer_3": [], "layer_4": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"protocol": "TCP", "dst_port": "80", "tcp_flags": ""}
+        }] }
+    })");
+    assert(!result.has_value());
+}
+
+TEST(test_parse_tcp_flags_invalid_name) {
+    auto result = parse_config_string(R"({
+        "pipeline": { "layer_2": [], "layer_3": [], "layer_4": [{
+            "rule_id": 1, "action": "allow",
+            "match": {"protocol": "TCP", "dst_port": "80", "tcp_flags": "BOGUS"}
+        }] }
+    })");
+    assert(!result.has_value());
+}
+
 int main() {
     int passed = 0, failed = 0;
     for (auto& [name, fn] : tests) {

@@ -496,14 +496,14 @@ TEST(l4_rule_padding_is_zero) {
     auto cr = compiler::compile_rules(pl, objs, null_resolver);
     assert(cr.has_value());
 
-    // Check the _pad bytes at offset 10-15 are zero
+    // Check tcp_flags and _pad bytes at offset 10-15 are zero
     auto& rule = cr->l4_rules[0].rule;
+    assert(rule.tcp_flags_set == 0);
+    assert(rule.tcp_flags_unset == 0);
     assert(rule._pad[0] == 0);
     assert(rule._pad[1] == 0);
     assert(rule._pad[2] == 0);
     assert(rule._pad[3] == 0);
-    assert(rule._pad[4] == 0);
-    assert(rule._pad[5] == 0);
 }
 
 TEST(l3_rule_padding_is_zero) {
@@ -538,6 +538,46 @@ TEST(l4_match_key_padding_is_zero) {
     assert(cr.has_value());
 
     assert(cr->l4_rules[0].match._pad == 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L2 rule struct size and PCP key
+// ═══════════════════════════════════════════════════════════
+
+TEST(l2_rule_sizeof_24) {
+    assert(sizeof(struct l2_rule) == 24);
+}
+
+TEST(pcp_key_sizeof_4) {
+    assert(sizeof(struct pcp_key) == 4);
+}
+
+TEST(l2_rule_filter_mask_offset_17) {
+    assert(offsetof(struct l2_rule, filter_mask) == 17);
+}
+
+TEST(l2_rule_filter_vlan_offset_18) {
+    assert(offsetof(struct l2_rule, filter_vlan_id) == 18);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L4 rule tcp_flags fields
+// ═══════════════════════════════════════════════════════════
+
+TEST(l4_rule_sizeof_still_24) {
+    assert(sizeof(struct l4_rule) == 24);
+}
+
+TEST(l4_rule_tcp_flags_set_offset_10) {
+    assert(offsetof(struct l4_rule, tcp_flags_set) == 10);
+}
+
+TEST(l4_rule_tcp_flags_unset_offset_11) {
+    assert(offsetof(struct l4_rule, tcp_flags_unset) == 11);
+}
+
+TEST(l4_rule_rate_bps_offset_still_16) {
+    assert(offsetof(struct l4_rule, rate_bps) == 16);
 }
 
 int main() {

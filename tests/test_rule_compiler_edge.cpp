@@ -1244,6 +1244,449 @@ TEST(test_l2_next_layer_l4_compile) {
     assert(result->l2_rules[0].rule.next_layer == 2); // LAYER_4_IDX
 }
 
+// ═══════════════════════════════════════════════════════════
+// L2 compound rules + PCP
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l2_pcp_only_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.pcp = 6;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Pcp);
+    assert(result->l2_rules[0].pcp.pcp == 6);
+    assert(result->l2_rules[0].rule.filter_mask == 0);
+}
+
+TEST(test_l2_compound_src_mac_vlan_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 10;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.vlan_id = 100;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
+    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_VLAN);
+    assert(result->l2_rules[0].rule.filter_vlan_id == 100);
+}
+
+TEST(test_l2_compound_ethertype_vlan_compile) {
+    // vlan_id is more selective than ethertype → primary=Vlan
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 20;
+    r.match.ethertype = "IPv4";
+    r.match.vlan_id = 200;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
+    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_ETHERTYPE);
+    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
+}
+
+TEST(test_l2_compound_vlan_pcp_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 30;
+    r.match.vlan_id = 300;
+    r.match.pcp = 5;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
+    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_PCP);
+    assert(result->l2_rules[0].rule.filter_pcp == 5);
+}
+
+TEST(test_l2_compound_three_fields_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 40;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.ethertype = "IPv4";
+    r.match.vlan_id = 400;
+    r.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    // SrcMac is most selective → primary
+    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
+    assert(result->l2_rules[0].rule.filter_mask == (L2_FILTER_ETHERTYPE | L2_FILTER_VLAN));
+    assert(result->l2_rules[0].rule.filter_vlan_id == 400);
+    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
+}
+
+TEST(test_l2_compound_collision_same_primary) {
+    // Two rules with same src_mac but different vlan → collision on primary key
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r1;
+    r1.rule_id = 50;
+    r1.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r1.match.vlan_id = 100;
+    r1.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 51;
+    r2.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r2.match.vlan_id = 200;
+    r2.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("collision") != std::string::npos);
+}
+
+TEST(test_l2_compound_mac_group_expansion) {
+    // 3 MACs + vlan=100 → 3 entries each with FILTER_VLAN
+    config::ObjectStore objects;
+    objects.mac_groups["servers"] = {"AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02", "AA:BB:CC:DD:EE:03"};
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 60;
+    r.match.src_mac = "object:servers";
+    r.match.vlan_id = 100;
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 3);
+    for (auto& cr : result->l2_rules) {
+        assert(cr.type == compiler::L2MatchType::SrcMac);
+        assert(cr.rule.filter_mask & L2_FILTER_VLAN);
+        assert(cr.rule.filter_vlan_id == 100);
+    }
+}
+
+TEST(test_l2_single_field_filter_mask_zero) {
+    // Old-style single-field rules → filter_mask=0
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 70;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules[0].rule.filter_mask == 0);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L4 tcp_flags compilation
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l4_tcp_flags_syn_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "SYN";
+    r.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l4_rules[0].rule.tcp_flags_set == TCPF_SYN);
+    assert(result->l4_rules[0].rule.tcp_flags_unset == 0);
+}
+
+TEST(test_l4_tcp_flags_syn_not_ack_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "SYN,!ACK";
+    r.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l4_rules[0].rule.tcp_flags_set == TCPF_SYN);
+    assert(result->l4_rules[0].rule.tcp_flags_unset == TCPF_ACK);
+}
+
+TEST(test_l4_tcp_flags_multiple_set_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "SYN,ACK";
+    r.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l4_rules[0].rule.tcp_flags_set == (TCPF_SYN | TCPF_ACK));
+    assert(result->l4_rules[0].rule.tcp_flags_unset == 0);
+}
+
+TEST(test_l4_tcp_flags_absent_compile) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l4_rules[0].rule.tcp_flags_set == 0);
+    assert(result->l4_rules[0].rule.tcp_flags_unset == 0);
+}
+
+TEST(test_l4_tcp_flags_with_tag_action) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.tcp_flags = "SYN";
+    r.action = config::Action::Tag;
+    r.params.dscp = "EF";
+    r.params.cos = 5;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l4_rules[0].rule.tcp_flags_set == TCPF_SYN);
+    assert(result->l4_rules[0].rule.dscp == 46);
+    assert(result->l4_rules[0].rule.cos == 5);
+}
+
+TEST(test_l4_tcp_flags_collision_still_detected) {
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.protocol = "TCP";
+    r1.match.dst_port = "80";
+    r1.match.tcp_flags = "SYN";
+    r1.action = config::Action::Drop;
+    pipeline.layer_4.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.protocol = "TCP";
+    r2.match.dst_port = "80";
+    r2.match.tcp_flags = "ACK";
+    r2.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("collision") != std::string::npos);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L2 ethertype secondary htons + all-three secondaries
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l2_ethertype_secondary_htons) {
+    // Compound L2 rule: src_mac (primary) + ethertype (secondary).
+    // Verify filter_ethertype is stored in network byte order (htons).
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.ethertype = "IPv4";
+    r.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
+    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_ETHERTYPE);
+    // Must be htons(0x0800), not raw 0x0800
+    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
+    // Double-check it is NOT host order (on little-endian, htons(0x0800) == 0x0008)
+    assert(result->l2_rules[0].rule.filter_ethertype != 0 );
+}
+
+TEST(test_l2_all_three_secondary_filters) {
+    // Compound L2 rule: src_mac (primary) + ethertype + vlan_id + pcp (all three secondaries).
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.src_mac = "11:22:33:44:55:66";
+    r.match.ethertype = "IPv4";
+    r.match.vlan_id = 42;
+    r.match.pcp = 3;
+    r.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 1);
+    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
+    assert(result->l2_rules[0].rule.filter_mask ==
+           (L2_FILTER_ETHERTYPE | L2_FILTER_VLAN | L2_FILTER_PCP));
+    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
+    assert(result->l2_rules[0].rule.filter_vlan_id == 42);
+    assert(result->l2_rules[0].rule.filter_pcp == 3);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L3 IPv6 collision / unknown ref / overlapping prefixes
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l3v6_collision_same_prefix) {
+    // Two L3 rules with identical IPv6 subnets → collision error
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.src_ip6 = "2001:db8::/32";
+    r1.action = config::Action::Allow;
+    pipeline.layer_3.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.src_ip6 = "2001:db8::/32";
+    r2.action = config::Action::Drop;
+    pipeline.layer_3.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("IPv6 subnet key collision") != std::string::npos);
+    assert(result.error().find("rule 1") != std::string::npos);
+    assert(result.error().find("rule 2") != std::string::npos);
+}
+
+TEST(test_l3v6_unknown_object6_ref) {
+    // L3 rule referencing a nonexistent object6 → compilation error
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.src_ip6 = "object6:nonexistent";
+    r.action = config::Action::Allow;
+    pipeline.layer_3.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+}
+
+TEST(test_l3v6_overlapping_no_collision) {
+    // Two IPv6 rules with overlapping but different-length prefixes:
+    // 2001:db8::/32 and 2001:db8:1234::/48 are distinct LPM trie keys.
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.src_ip6 = "2001:db8::/32";
+    r1.action = config::Action::Allow;
+    pipeline.layer_3.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.src_ip6 = "2001:db8:1234::/48";
+    r2.action = config::Action::Drop;
+    pipeline.layer_3.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l3v6_rules.size() == 2);
+    assert(result->l3v6_rules[0].subnet_key.prefixlen == 32);
+    assert(result->l3v6_rules[1].subnet_key.prefixlen == 48);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L4 port boundary via port_group
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l4_port_boundary_0_65535) {
+    // Port group with boundary values 0 and 65535.
+    config::ObjectStore objects;
+    objects.port_groups["boundary"] = {0, 65535};
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "object:boundary";
+    r.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l4_rules.size() == 2);
+    assert(result->l4_rules[0].match.dst_port == 0);
+    assert(result->l4_rules[1].match.dst_port == 65535);
+}
+
+// ═══════════════════════════════════════════════════════════
+// L2 mac_group cross-rule collision
+// ═══════════════════════════════════════════════════════════
+
+TEST(test_l2_mac_group_cross_rule_collision) {
+    // Two separate L2 rules referencing different mac_groups,
+    // but the groups contain the same MAC address → collision on primary key.
+    config::ObjectStore objects;
+    objects.mac_groups["group_a"] = {"AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"};
+    objects.mac_groups["group_b"] = {"DE:AD:BE:EF:00:01", "AA:BB:CC:DD:EE:FF"};
+    config::Pipeline pipeline;
+
+    config::Rule r1;
+    r1.rule_id = 1;
+    r1.match.src_mac = "object:group_a";
+    r1.action = config::Action::Allow;
+    pipeline.layer_2.push_back(r1);
+
+    config::Rule r2;
+    r2.rule_id = 2;
+    r2.match.src_mac = "object:group_b";
+    r2.action = config::Action::Drop;
+    pipeline.layer_2.push_back(r2);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("L2 src_mac key collision") != std::string::npos);
+}
+
 int main() {
     int passed = 0, failed = 0;
     for (auto& [name, fn] : tests) {
