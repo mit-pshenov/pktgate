@@ -8,11 +8,31 @@
 /*
  * Layer 2: Ethernet filtering.
  *
- * Checks four hash maps in fixed priority order:
- *   src_mac → dst_mac → ethertype → vlan_id
- * First match wins — its action is executed.
+ * Checks five hash maps in fixed priority order:
+ *   src_mac → dst_mac → ethertype → vlan_id → pcp
+ * After primary lookup, secondary filter fields are checked (compound rules).
+ * First full match wins — its action is executed.
  * No match → tail call to Layer 3 (backward compat).
  */
+
+/* Check secondary filter fields on a matched rule.
+ * Returns true if ALL secondary conditions pass (or filter_mask == 0). */
+static __always_inline bool l2_filters_match(struct l2_rule *rule,
+                                              __u16 eth_proto,
+                                              __u16 vlan_id,
+                                              __u8 pcp)
+{
+    __u8 mask = rule->filter_mask;
+    if (!mask)
+        return true;
+    if ((mask & L2_FILTER_ETHERTYPE) && rule->filter_ethertype != eth_proto)
+        return false;
+    if ((mask & L2_FILTER_VLAN) && rule->filter_vlan_id != vlan_id)
+        return false;
+    if ((mask & L2_FILTER_PCP) && rule->filter_pcp != pcp)
+        return false;
+    return true;
+}
 
 static __always_inline int handle_l2_action(struct xdp_md *ctx,
                                             struct pkt_meta *meta,
@@ -98,13 +118,34 @@ int layer2_prog(struct xdp_md *ctx)
     __u32 gen = meta->generation;
     struct l2_rule *rule;
 
+    /* ── Parse EtherType, VLAN, PCP early — needed by all lookups for filters ── */
+    __u16 eth_proto = eth->h_proto;  /* network byte order */
+    __u16 vlan_id = 0;
+    __u8  pcp = 0;
+    bool  has_vlan = false;
+
+    /* Parse 802.1Q if present — extract VLAN ID, PCP, and inner ethertype */
+    if (eth_proto == bpf_htons(0x8100)) {
+        /* Need 4 extra bytes for VLAN TCI + inner ethertype */
+        if ((void *)((unsigned char *)eth + 14 + 4) > data_end) {
+            STAT_INC(STAT_DROP_L2_BOUNDS);
+            return XDP_DROP;
+        }
+        __u16 *vlan_tci = (__u16 *)((unsigned char *)eth + 14);
+        __u16 tci_host = bpf_ntohs(*vlan_tci);
+        vlan_id = tci_host & 0x0FFF;
+        pcp = (tci_host >> 13) & 0x7;
+        eth_proto = *(__u16 *)((unsigned char *)eth + 16);  /* inner ethertype, NBO */
+        has_vlan = true;
+    }
+
     /* ── 1. Source MAC lookup ──────────────────────────────── */
     struct mac_key src_key = {};
     __builtin_memcpy(src_key.addr, eth->h_source, 6);
 
     rule = (gen == 0) ? bpf_map_lookup_elem(&l2_src_mac_0, &src_key)
                       : bpf_map_lookup_elem(&l2_src_mac_1, &src_key);
-    if (rule) {
+    if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
         BPF_DBG("L2: src_mac match, rule %d", rule->rule_id);
         return handle_l2_action(ctx, meta, rule);
     }
@@ -115,45 +156,42 @@ int layer2_prog(struct xdp_md *ctx)
 
     rule = (gen == 0) ? bpf_map_lookup_elem(&l2_dst_mac_0, &dst_key)
                       : bpf_map_lookup_elem(&l2_dst_mac_1, &dst_key);
-    if (rule) {
+    if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
         BPF_DBG("L2: dst_mac match, rule %d", rule->rule_id);
         return handle_l2_action(ctx, meta, rule);
     }
 
     /* ── 3. EtherType lookup ───────────────────────────────── */
-    __u16 eth_proto = eth->h_proto;  /* network byte order */
-    __u16 vlan_id = 0;
-
-    /* Parse 802.1Q if present — use inner ethertype for matching */
-    if (eth_proto == bpf_htons(0x8100)) {
-        /* Need 4 extra bytes for VLAN TCI + inner ethertype */
-        if ((void *)((unsigned char *)eth + 14 + 4) > data_end) {
-            STAT_INC(STAT_DROP_L2_BOUNDS);
-            return XDP_DROP;
-        }
-        __u16 *vlan_tci = (__u16 *)((unsigned char *)eth + 14);
-        vlan_id = bpf_ntohs(*vlan_tci) & 0x0FFF;
-        eth_proto = *(__u16 *)((unsigned char *)eth + 16);  /* inner ethertype, NBO */
-    }
-
     struct ethertype_key ekey = { .ethertype = eth_proto };
 
     rule = (gen == 0) ? bpf_map_lookup_elem(&l2_ethertype_0, &ekey)
                       : bpf_map_lookup_elem(&l2_ethertype_1, &ekey);
-    if (rule) {
+    if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
         BPF_DBG("L2: ethertype match 0x%x, rule %d",
                  bpf_ntohs(eth_proto), rule->rule_id);
         return handle_l2_action(ctx, meta, rule);
     }
 
     /* ── 4. VLAN ID lookup ─────────────────────────────────── */
-    if (vlan_id) {
+    if (has_vlan) {
         struct vlan_key vkey = { .vlan_id = vlan_id };
 
         rule = (gen == 0) ? bpf_map_lookup_elem(&l2_vlan_0, &vkey)
                           : bpf_map_lookup_elem(&l2_vlan_1, &vkey);
-        if (rule) {
+        if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
             BPF_DBG("L2: vlan %d match, rule %d", vlan_id, rule->rule_id);
+            return handle_l2_action(ctx, meta, rule);
+        }
+    }
+
+    /* ── 5. PCP lookup (only for tagged frames) ───────────── */
+    if (has_vlan) {
+        struct pcp_key pkey = { .pcp = pcp };
+
+        rule = (gen == 0) ? bpf_map_lookup_elem(&l2_pcp_0, &pkey)
+                          : bpf_map_lookup_elem(&l2_pcp_1, &pkey);
+        if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
+            BPF_DBG("L2: pcp %d match, rule %d", pcp, rule->rule_id);
             return handle_l2_action(ctx, meta, rule);
         }
     }

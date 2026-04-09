@@ -91,6 +91,8 @@ std::expected<void, std::string> BpfLoader::load() {
         REUSE_MAP(l2_ethertype_1);
         REUSE_MAP(l2_vlan_0);
         REUSE_MAP(l2_vlan_1);
+        REUSE_MAP(l2_pcp_0);
+        REUSE_MAP(l2_pcp_1);
         REUSE_MAP(subnet_rules_0);
         REUSE_MAP(subnet_rules_1);
         REUSE_MAP(subnet6_rules_0);
@@ -287,6 +289,13 @@ int BpfLoader::l2_vlan_fd(uint32_t gen) const {
     return gen == 0
         ? bpf_map__fd(impl_->entry->maps.l2_vlan_0)
         : bpf_map__fd(impl_->entry->maps.l2_vlan_1);
+}
+
+int BpfLoader::l2_pcp_fd(uint32_t gen) const {
+    if (!impl_->entry) return -1;
+    return gen == 0
+        ? bpf_map__fd(impl_->entry->maps.l2_pcp_0)
+        : bpf_map__fd(impl_->entry->maps.l2_pcp_1);
 }
 
 int BpfLoader::subnet_rules_fd(uint32_t gen) const {

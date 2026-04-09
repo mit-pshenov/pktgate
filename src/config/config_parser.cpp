@@ -22,6 +22,12 @@ static Rule parse_rule(const json& j) {
                 throw std::invalid_argument("vlan_id out of range 0-4095: " + std::to_string(val));
             r.match.vlan_id = static_cast<uint16_t>(val);
         }
+        if (m.contains("pcp")) {
+            auto val = m["pcp"].get<int>();
+            if (val < 0 || val > 7)
+                throw std::invalid_argument("pcp out of range 0-7: " + std::to_string(val));
+            r.match.pcp = static_cast<uint8_t>(val);
+        }
         if (m.contains("src_ip"))    r.match.src_ip    = m["src_ip"].get<std::string>();
         if (m.contains("dst_ip"))    r.match.dst_ip    = m["dst_ip"].get<std::string>();
         if (m.contains("src_ip6"))   r.match.src_ip6   = m["src_ip6"].get<std::string>();
@@ -29,6 +35,11 @@ static Rule parse_rule(const json& j) {
         if (m.contains("vrf"))       r.match.vrf       = m["vrf"].get<std::string>();
         if (m.contains("protocol"))  r.match.protocol  = m["protocol"].get<std::string>();
         if (m.contains("dst_port"))  r.match.dst_port  = m["dst_port"].get<std::string>();
+        if (m.contains("tcp_flags")) {
+            auto val = m["tcp_flags"].get<std::string>();
+            parse_tcp_flags(val); // validate format — throws on error
+            r.match.tcp_flags = std::move(val);
+        }
     }
 
     r.action = parse_action(j.at("action").get<std::string>());

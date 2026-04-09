@@ -36,17 +36,22 @@ static void validate_l2_rules(const std::vector<Rule>& rules,
         auto& r = rules[i];
         std::string ctx = "layer_2[" + std::to_string(i) + "]";
 
-        // L2 rule must match on exactly one field
+        // L2 rule must have at least one match field; src_mac+dst_mac combo is forbidden
         int match_count = 0;
         if (r.match.src_mac)   ++match_count;
         if (r.match.dst_mac)   ++match_count;
         if (r.match.ethertype) ++match_count;
         if (r.match.vlan_id)   ++match_count;
+        if (r.match.pcp)       ++match_count;
 
         if (match_count == 0)
-            errs.push_back({ctx, "L2 rule must specify a match field (src_mac, dst_mac, ethertype, or vlan_id)"});
-        else if (match_count > 1)
-            errs.push_back({ctx, "L2 rule must match on exactly one field"});
+            errs.push_back({ctx, "L2 rule must specify a match field (src_mac, dst_mac, ethertype, vlan_id, or pcp)"});
+
+        if (r.match.src_mac && r.match.dst_mac)
+            errs.push_back({ctx, "src_mac and dst_mac cannot be combined in one L2 rule"});
+
+        if (r.match.pcp && *r.match.pcp > 7)
+            errs.push_back({ctx, "pcp must be 0-7"});
 
         if (r.match.src_mac)
             check_object_ref(*r.match.src_mac, "mac_group", objects.mac_groups, ctx, errs);
@@ -155,6 +160,16 @@ static void validate_l4_rules(const std::vector<Rule>& rules,
                 catch (...) {
                     errs.push_back({ctx, "invalid bandwidth: " + *r.params.bandwidth});
                 }
+            }
+        }
+
+        if (r.match.tcp_flags) {
+            if (!r.match.protocol ||
+                (*r.match.protocol != "TCP" && *r.match.protocol != "tcp"))
+                errs.push_back({ctx, "tcp_flags requires protocol TCP"});
+            try { parse_tcp_flags(*r.match.tcp_flags); }
+            catch (...) {
+                errs.push_back({ctx, "invalid tcp_flags: " + *r.match.tcp_flags});
             }
         }
 

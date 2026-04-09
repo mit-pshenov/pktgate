@@ -30,6 +30,7 @@ public:
     int l2_dst_mac_fd(uint32_t gen) const;
     int l2_ethertype_fd(uint32_t gen) const;
     int l2_vlan_fd(uint32_t gen) const;
+    int l2_pcp_fd(uint32_t gen) const;
     int subnet_rules_fd(uint32_t gen) const;
     int subnet6_rules_fd(uint32_t gen) const;
     int vrf_rules_fd(uint32_t gen) const;

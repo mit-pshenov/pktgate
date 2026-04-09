@@ -26,6 +26,7 @@
 #define MAX_RATE_ENTRIES    4096
 #define MAX_ETHERTYPE_ENTRIES 64
 #define MAX_VLAN_ENTRIES    4096
+#define MAX_PCP_ENTRIES     8
 
 /* Layer indices inside prog_array */
 #define LAYER_2_IDX  0
@@ -98,13 +99,26 @@ struct vlan_key {
 /* ── Rule structures ───────────────────────────────────────── */
 
 /* Layer 2 rule — stored as value in L2 hash maps */
+/* L2 secondary filter bitmask — which extra fields to check after primary match */
+#define L2_FILTER_ETHERTYPE  (1 << 0)
+#define L2_FILTER_VLAN       (1 << 1)
+#define L2_FILTER_PCP        (1 << 2)
+
 struct l2_rule {
     __u32 rule_id;
     __u32 action;           /* enum filter_action */
     __u32 redirect_ifindex; /* for ACT_REDIRECT */
     __u32 mirror_ifindex;   /* for ACT_MIRROR   */
     __u8  next_layer;       /* 0=terminal, LAYER_3_IDX, LAYER_4_IDX */
-    __u8  _pad[3];
+    __u8  filter_mask;      /* bitmask of L2_FILTER_* secondary checks */
+    __u16 filter_vlan_id;   /* host byte order, checked if FILTER_VLAN */
+    __u16 filter_ethertype; /* network byte order, checked if FILTER_ETHERTYPE */
+    __u8  filter_pcp;       /* 0-7, checked if FILTER_PCP */
+    __u8  _pad;
+};
+
+struct pcp_key {
+    __u32 pcp;  /* 0-7, stored as u32 for BPF hash map key alignment */
 };
 
 /* Layer 3 rule — stored in rules array, indexed by LPM/VRF lookup */
@@ -124,13 +138,25 @@ struct l4_match_key {
     __u16 dst_port;   /* host byte order */
 };
 
+/* TCP flag bits (byte 13 of TCP header, low-order byte of flags+offset field) */
+#define TCPF_FIN  0x01
+#define TCPF_SYN  0x02
+#define TCPF_RST  0x04
+#define TCPF_PSH  0x08
+#define TCPF_ACK  0x10
+#define TCPF_URG  0x20
+#define TCPF_ECE  0x40
+#define TCPF_CWR  0x80
+
 struct l4_rule {
     __u32 rule_id;
-    __u32 action;      /* enum filter_action */
-    __u8  dscp;        /* for ACT_TAG (0-63) */
-    __u8  cos;         /* for ACT_TAG (0-7)  */
-    __u8  _pad[6];     /* explicit padding to align rate_bps at offset 16 */
-    __u64 rate_bps;    /* for ACT_RATE_LIMIT */
+    __u32 action;          /* enum filter_action */
+    __u8  dscp;            /* for ACT_TAG (0-63) */
+    __u8  cos;             /* for ACT_TAG (0-7)  */
+    __u8  tcp_flags_set;   /* TCP flags that MUST be set (0 = don't check) */
+    __u8  tcp_flags_unset; /* TCP flags that MUST NOT be set */
+    __u8  _pad[4];         /* explicit padding to align rate_bps at offset 16 */
+    __u64 rate_bps;        /* for ACT_RATE_LIMIT */
 };
 
 /* ── Per-packet metadata (passed between tail calls via per-CPU map) ── */

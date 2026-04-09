@@ -32,6 +32,7 @@ struct MatchCriteria {
     std::optional<std::string> dst_mac;    // literal or "object:xxx"
     std::optional<std::string> ethertype;  // "0x0800", "IPv4", "IPv6", "ARP"
     std::optional<uint16_t>    vlan_id;    // 0-4095
+    std::optional<uint8_t>     pcp;        // 802.1p Priority Code Point, 0-7
     std::optional<std::string> src_ip;     // literal IPv4 CIDR or "object:xxx"
     std::optional<std::string> dst_ip;
     std::optional<std::string> src_ip6;    // literal IPv6 CIDR or "object6:xxx"
@@ -39,6 +40,7 @@ struct MatchCriteria {
     std::optional<std::string> vrf;        // VRF name
     std::optional<std::string> protocol;   // "TCP" / "UDP"
     std::optional<std::string> dst_port;   // literal or "object:xxx"
+    std::optional<std::string> tcp_flags;  // e.g. "SYN,!ACK"
 };
 
 enum class Action {
@@ -137,6 +139,44 @@ inline uint16_t parse_ethertype(const std::string& s) {
         return static_cast<uint16_t>(val);
     }
     throw std::invalid_argument("Unknown ethertype: " + s);
+}
+
+struct TcpFlagsMask {
+    uint8_t flags_set;    // bits that MUST be 1
+    uint8_t flags_unset;  // bits that MUST be 0
+};
+
+/// Parse tcp_flags string like "SYN,!ACK" into set/unset bitmasks.
+inline TcpFlagsMask parse_tcp_flags(const std::string& s) {
+    if (s.empty())
+        throw std::invalid_argument("tcp_flags cannot be empty");
+
+    auto flag_bit = [](const std::string& name) -> uint8_t {
+        if (name == "FIN") return 0x01;
+        if (name == "SYN") return 0x02;
+        if (name == "RST") return 0x04;
+        if (name == "PSH") return 0x08;
+        if (name == "ACK") return 0x10;
+        if (name == "URG") return 0x20;
+        if (name == "ECE") return 0x40;
+        if (name == "CWR") return 0x80;
+        throw std::invalid_argument("Unknown TCP flag: " + name);
+    };
+
+    TcpFlagsMask result{};
+    size_t pos = 0;
+    while (pos < s.size()) {
+        size_t comma = s.find(',', pos);
+        auto token = s.substr(pos, comma == std::string::npos ? comma : comma - pos);
+        pos = (comma == std::string::npos) ? s.size() : comma + 1;
+
+        if (token.starts_with("!")) {
+            result.flags_unset |= flag_bit(token.substr(1));
+        } else {
+            result.flags_set |= flag_bit(token);
+        }
+    }
+    return result;
 }
 
 inline uint64_t parse_bandwidth(const std::string& s) {

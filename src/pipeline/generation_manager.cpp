@@ -61,6 +61,9 @@ GenerationManager::clear_shadow_maps(uint32_t gen) {
     r = loader::MapManager::clear_hash_map(loader_.l2_vlan_fd(gen));
     if (!r) return std::unexpected("clear l2_vlan: " + r.error());
 
+    r = loader::MapManager::clear_hash_map(loader_.l2_pcp_fd(gen));
+    if (!r) return std::unexpected("clear l2_pcp: " + r.error());
+
     // LPM trie: delete tracked keys explicitly (iteration not supported)
     if (!lpm_keys_[gen].empty()) {
         r = loader::MapManager::delete_keys(
@@ -111,6 +114,10 @@ GenerationManager::populate_l2_maps(uint32_t gen,
         case compiler::L2MatchType::Vlan:
             fd = loader_.l2_vlan_fd(gen);
             key = &cr.vlan;
+            break;
+        case compiler::L2MatchType::Pcp:
+            fd = loader_.l2_pcp_fd(gen);
+            key = &cr.pcp;
             break;
         }
 

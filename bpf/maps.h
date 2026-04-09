@@ -95,6 +95,22 @@ struct {
     __type(value, struct l2_rule);
 } l2_vlan_1 SEC(".maps");
 
+/* ── Layer 2: PCP hash → l2_rule (one per gen) ────────── */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_PCP_ENTRIES);
+    __type(key, struct pcp_key);
+    __type(value, struct l2_rule);
+} l2_pcp_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_PCP_ENTRIES);
+    __type(key, struct pcp_key);
+    __type(value, struct l2_rule);
+} l2_pcp_1 SEC(".maps");
+
 /* ── Layer 3: Subnet LPM trie → rule index (one per gen) ── */
 
 struct {

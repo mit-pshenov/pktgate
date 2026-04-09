@@ -191,7 +191,7 @@
     },
 
     "rule_l2": {
-      "description": "Layer 2 rule — Ethernet matching. Each rule must match on exactly one field.",
+      "description": "Layer 2 rule — Ethernet matching. Compound rules (AND logic) supported; src_mac+dst_mac combo is forbidden.",
       "allOf": [{ "$ref": "#/$defs/rule_base" }],
       "properties": {
         "rule_id": true,
@@ -219,14 +219,16 @@
               "minimum": 0,
               "maximum": 4095,
               "description": "802.1Q VLAN ID"
+            },
+            "pcp": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 7,
+              "description": "802.1p Priority Code Point (3 bits from VLAN TCI)"
             }
           },
-          "oneOf": [
-            { "required": ["src_mac"] },
-            { "required": ["dst_mac"] },
-            { "required": ["ethertype"] },
-            { "required": ["vlan_id"] }
-          ],
+          "minProperties": 1,
+          "not": { "required": ["src_mac", "dst_mac"] },
           "additionalProperties": false
         },
         "next_layer": {
@@ -301,6 +303,11 @@
             "dst_port": {
               "$ref": "#/$defs/object_ref",
               "description": "Destination port — literal (0-65535) or object:port_group_name"
+            },
+            "tcp_flags": {
+              "type": "string",
+              "pattern": "^!?(FIN|SYN|RST|PSH|ACK|URG|ECE|CWR)(,!?(FIN|SYN|RST|PSH|ACK|URG|ECE|CWR))*$",
+              "description": "TCP flags bitmask: comma-separated flag names, ! prefix for must-not-be-set"
             }
           },
           "required": ["protocol", "dst_port"],

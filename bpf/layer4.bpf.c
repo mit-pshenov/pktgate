@@ -184,6 +184,8 @@ int layer4_prog(struct xdp_md *ctx)
         return XDP_DROP;
     }
 
+    __u8 tcp_flags = 0;
+
     if (proto == 6) { /* TCP */
         struct tcphdr *tcp = (struct tcphdr *)l4;
         if ((unsigned char *)(tcp + 1) > data_end) {
@@ -191,6 +193,7 @@ int layer4_prog(struct xdp_md *ctx)
             return XDP_DROP;
         }
         dst_port = bpf_ntohs(tcp->dest);
+        tcp_flags = *((unsigned char *)tcp + 13); /* flags byte */
     } else if (proto == 17) { /* UDP */
         struct udphdr *udp = (struct udphdr *)l4;
         if ((unsigned char *)(udp + 1) > data_end) {
@@ -231,6 +234,16 @@ int layer4_prog(struct xdp_md *ctx)
 
     if (!rule)
         return get_default_action(meta);
+
+    /* Secondary filter: TCP flags bitmask check.
+     * If rule specifies flags constraints but packet doesn't match,
+     * treat as no-match and fall through to default action. */
+    if (rule->tcp_flags_set || rule->tcp_flags_unset) {
+        if ((tcp_flags & rule->tcp_flags_set) != rule->tcp_flags_set)
+            return get_default_action(meta);
+        if (tcp_flags & rule->tcp_flags_unset)
+            return get_default_action(meta);
+    }
 
     switch (rule->action) {
     case ACT_ALLOW:

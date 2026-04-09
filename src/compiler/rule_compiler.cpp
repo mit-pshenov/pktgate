@@ -127,38 +127,79 @@ compile_rules(const config::Pipeline& pipeline,
             if (rule.action == config::Action::Mirror && rule.params.target_port)
                 base.mirror_ifindex = resolver(*rule.params.target_port);
 
-            if (rule.match.src_mac) {
-                auto macs = resolve_object_macs(*rule.match.src_mac, objects);
-                for (auto& mac : macs) {
-                    CompiledL2Rule cr{};
-                    cr.type = L2MatchType::SrcMac;
-                    std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
-                    cr.rule = base;
-                    result.l2_rules.push_back(cr);
-                }
-            } else if (rule.match.dst_mac) {
-                auto macs = resolve_object_macs(*rule.match.dst_mac, objects);
-                for (auto& mac : macs) {
-                    CompiledL2Rule cr{};
-                    cr.type = L2MatchType::DstMac;
-                    std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
-                    cr.rule = base;
-                    result.l2_rules.push_back(cr);
-                }
-            } else if (rule.match.ethertype) {
-                auto eth_val = config::parse_ethertype(*rule.match.ethertype);
-                CompiledL2Rule cr{};
-                cr.type = L2MatchType::Ethertype;
-                cr.ether.ethertype = htons(eth_val);  // store in network byte order
-                cr.rule = base;
-                result.l2_rules.push_back(cr);
-            } else if (rule.match.vlan_id) {
-                CompiledL2Rule cr{};
-                cr.type = L2MatchType::Vlan;
-                cr.vlan.vlan_id = *rule.match.vlan_id;
-                cr.rule = base;
-                result.l2_rules.push_back(cr);
+            // Determine primary field by selectivity:
+            // src_mac > dst_mac > vlan_id > ethertype > pcp
+            L2MatchType primary;
+            if (rule.match.src_mac)
+                primary = L2MatchType::SrcMac;
+            else if (rule.match.dst_mac)
+                primary = L2MatchType::DstMac;
+            else if (rule.match.vlan_id)
+                primary = L2MatchType::Vlan;
+            else if (rule.match.ethertype)
+                primary = L2MatchType::Ethertype;
+            else if (rule.match.pcp)
+                primary = L2MatchType::Pcp;
+            else
+                continue; // no match fields — validator should have caught this
+
+            // Build secondary filter mask + values
+            uint8_t filter_mask = 0;
+            if (rule.match.ethertype && primary != L2MatchType::Ethertype) {
+                filter_mask |= L2_FILTER_ETHERTYPE;
+                base.filter_ethertype = htons(config::parse_ethertype(*rule.match.ethertype));
             }
+            if (rule.match.vlan_id && primary != L2MatchType::Vlan) {
+                filter_mask |= L2_FILTER_VLAN;
+                base.filter_vlan_id = *rule.match.vlan_id;
+            }
+            if (rule.match.pcp && primary != L2MatchType::Pcp) {
+                filter_mask |= L2_FILTER_PCP;
+                base.filter_pcp = *rule.match.pcp;
+            }
+            base.filter_mask = filter_mask;
+
+            // Emit compiled entries (MAC types expand object groups)
+            auto emit_entry = [&](L2MatchType type) {
+                if (type == L2MatchType::SrcMac) {
+                    auto macs = resolve_object_macs(*rule.match.src_mac, objects);
+                    for (auto& mac : macs) {
+                        CompiledL2Rule cr{};
+                        cr.type = L2MatchType::SrcMac;
+                        std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
+                        cr.rule = base;
+                        result.l2_rules.push_back(cr);
+                    }
+                } else if (type == L2MatchType::DstMac) {
+                    auto macs = resolve_object_macs(*rule.match.dst_mac, objects);
+                    for (auto& mac : macs) {
+                        CompiledL2Rule cr{};
+                        cr.type = L2MatchType::DstMac;
+                        std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
+                        cr.rule = base;
+                        result.l2_rules.push_back(cr);
+                    }
+                } else if (type == L2MatchType::Ethertype) {
+                    CompiledL2Rule cr{};
+                    cr.type = L2MatchType::Ethertype;
+                    cr.ether.ethertype = htons(config::parse_ethertype(*rule.match.ethertype));
+                    cr.rule = base;
+                    result.l2_rules.push_back(cr);
+                } else if (type == L2MatchType::Vlan) {
+                    CompiledL2Rule cr{};
+                    cr.type = L2MatchType::Vlan;
+                    cr.vlan.vlan_id = *rule.match.vlan_id;
+                    cr.rule = base;
+                    result.l2_rules.push_back(cr);
+                } else if (type == L2MatchType::Pcp) {
+                    CompiledL2Rule cr{};
+                    cr.type = L2MatchType::Pcp;
+                    cr.pcp.pcp = *rule.match.pcp;
+                    cr.rule = base;
+                    result.l2_rules.push_back(cr);
+                }
+            };
+            emit_entry(primary);
         }
 
         // Compile Layer 3 rules
@@ -250,6 +291,12 @@ compile_rules(const config::Pipeline& pipeline,
                     }
                 }
 
+                if (rule.match.tcp_flags) {
+                    auto tf = config::parse_tcp_flags(*rule.match.tcp_flags);
+                    cr.rule.tcp_flags_set   = tf.flags_set;
+                    cr.rule.tcp_flags_unset = tf.flags_unset;
+                }
+
                 result.l4_rules.push_back(cr);
             }
         }
@@ -264,6 +311,7 @@ compile_rules(const config::Pipeline& pipeline,
         // src_mac collisions
         std::unordered_map<std::string, uint32_t> src_seen, dst_seen;
         std::unordered_map<uint16_t, uint32_t> ether_seen, vlan_seen;
+        std::unordered_map<uint32_t, uint32_t> pcp_seen;
 
         for (auto& cr : result.l2_rules) {
             std::string mac_str(reinterpret_cast<const char*>(cr.mac.addr), 6);
@@ -300,6 +348,15 @@ compile_rules(const config::Pipeline& pipeline,
                 if (!ok)
                     return std::unexpected(
                         "L2 vlan key collision: same vlan_id used by rule " +
+                        std::to_string(it->second) + " and rule " +
+                        std::to_string(cr.rule.rule_id));
+                break;
+            }
+            case L2MatchType::Pcp: {
+                auto [it, ok] = pcp_seen.emplace(cr.pcp.pcp, cr.rule.rule_id);
+                if (!ok)
+                    return std::unexpected(
+                        "L2 pcp key collision: same PCP used by rule " +
                         std::to_string(it->second) + " and rule " +
                         std::to_string(cr.rule.rule_id));
                 break;
