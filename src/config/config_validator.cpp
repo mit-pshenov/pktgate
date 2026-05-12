@@ -28,6 +28,39 @@ static void validate_rule_ids(const std::vector<Rule>& rules,
     }
 }
 
+// Per-layer "applicable match fields" check. Closes P0-05 from the review:
+// the compiler silently dropped fields that didn't apply to a layer, so
+// `dst_port` on an L3 rule or `src_mac` on an L4 rule was accepted but had
+// no runtime effect. Operator intent diverged from behaviour with no warning.
+static void check_field_applicability(const MatchCriteria& m,
+                                       int layer,
+                                       const std::string& ctx,
+                                       std::vector<ValidationError>& errs) {
+    auto reject = [&](const char* field) {
+        errs.push_back({ctx,
+            std::string("field '") + field + "' is not applicable to layer " +
+            std::to_string(layer)});
+    };
+    if (layer != 2) {
+        if (m.src_mac)   reject("src_mac");
+        if (m.dst_mac)   reject("dst_mac");
+        if (m.ethertype) reject("ethertype");
+        if (m.vlan_id)   reject("vlan_id");
+        if (m.pcp)       reject("pcp");
+    }
+    if (layer != 3) {
+        // dst_ip / dst_ip6 already rejected outright in validate_l3_rules.
+        if (m.src_ip)    reject("src_ip");
+        if (m.src_ip6)   reject("src_ip6");
+        if (m.vrf)       reject("vrf");
+    }
+    if (layer != 4) {
+        if (m.protocol)  reject("protocol");
+        if (m.dst_port)  reject("dst_port");
+        if (m.tcp_flags) reject("tcp_flags");
+    }
+}
+
 static void validate_l2_rules(const std::vector<Rule>& rules,
                                const ObjectStore& objects,
                                std::vector<ValidationError>& errs) {
@@ -35,6 +68,8 @@ static void validate_l2_rules(const std::vector<Rule>& rules,
     for (size_t i = 0; i < rules.size(); ++i) {
         auto& r = rules[i];
         std::string ctx = "layer_2[" + std::to_string(i) + "]";
+
+        check_field_applicability(r.match, 2, ctx, errs);
 
         // L2 rule must have at least one match field; src_mac+dst_mac combo is forbidden
         int match_count = 0;
@@ -87,6 +122,8 @@ static void validate_l3_rules(const std::vector<Rule>& rules,
         auto& r = rules[i];
         std::string ctx = "layer_3[" + std::to_string(i) + "]";
 
+        check_field_applicability(r.match, 3, ctx, errs);
+
         // dst_ip / dst_ip6 are parsed into the model but no destination LPM
         // trie exists in the data plane. Silently compiling them as a 0.0.0.0/0
         // entry (legacy fall-through in the compiler) turned a narrow drop
@@ -136,6 +173,8 @@ static void validate_l4_rules(const std::vector<Rule>& rules,
     for (size_t i = 0; i < rules.size(); ++i) {
         auto& r = rules[i];
         std::string ctx = "layer_4[" + std::to_string(i) + "]";
+
+        check_field_applicability(r.match, 4, ctx, errs);
 
         if (!r.match.protocol)
             errs.push_back({ctx, "L4 rule requires protocol"});

@@ -36,12 +36,19 @@ rules and none match, `default_behavior` applies. An **empty** layer (e.g.
 without an opinion, so an L3-only config doesn't have to spell out an
 allow-all L2 rule just to keep traffic flowing.
 
-Config is validated against [config-schema.json](config-schema.json)
-and can be checked without loading BPF programs:
+Configs can be checked without loading BPF programs:
 
 ```bash
 ./build/validate_config config.json
 ```
+
+`validate_config` runs the full transform a live deploy would do (parse →
+semantic validate → compile to BPF map entries) minus the BPF load. A
+config that passes the tool is structurally safe to deploy. The
+[config-schema.json](config-schema.json) at the repo root is a non-
+authoritative reference for editor tooling — the C++ validator is the
+source of truth and is strictly stricter (per-layer match-field guards,
+rejection of unsupported fields, ifindex resolution).
 
 ## Top-Level Structure
 

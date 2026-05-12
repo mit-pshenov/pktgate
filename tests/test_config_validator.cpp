@@ -481,6 +481,68 @@ TEST(test_l3_src_ip_accepted) {
     assert(result.has_value());
 }
 
+// ─── #6 P0-05: wrong-layer match fields rejected ───────────────────
+
+TEST(test_l3_dst_port_field_rejected) {
+    // dst_port belongs to L4. Previously the compiler silently dropped it.
+    Config cfg;
+    cfg.interface = "eth0";
+    cfg.objects.subnets["allowed"] = {"10.0.0.0/8"};
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_ip = "object:allowed";
+    r.match.dst_port = "80";
+    cfg.pipeline.layer_3.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "field 'dst_port' is not applicable to layer 3"));
+}
+
+TEST(test_l4_src_mac_field_rejected) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "field 'src_mac' is not applicable to layer 4"));
+}
+
+TEST(test_l2_protocol_field_rejected) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_mac = "AA:BB:CC:DD:EE:FF";
+    r.match.protocol = "TCP";
+    cfg.pipeline.layer_2.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "field 'protocol' is not applicable to layer 2"));
+}
+
+TEST(test_l4_vlan_id_field_rejected) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "80";
+    r.match.vlan_id = 100;
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "field 'vlan_id' is not applicable to layer 4"));
+}
+
 TEST(test_l2_dst_mac_object_ref_valid) {
     Config cfg;
     cfg.interface = "eth0";
