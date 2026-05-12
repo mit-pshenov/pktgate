@@ -161,8 +161,7 @@ TEST(test_compile_l4_rules_expanded) {
 
     assert(result->l4_rules[0].match.protocol == 6);  // TCP
     assert(result->l4_rules[0].match.dst_port == 80);
-    int ncpus = libbpf_num_possible_cpus();
-    if (ncpus < 1) ncpus = 1;
+    int ncpus = compiler::online_cpu_count();
     assert(result->l4_rules[0].rule.rate_bps == 10000000000ULL / ncpus);
 
     assert(result->l4_rules[1].match.dst_port == 443);

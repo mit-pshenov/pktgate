@@ -396,8 +396,7 @@ TEST(l4_rule_rate_limit_bps) {
 
     auto& rule = cr->l4_rules[0].rule;
     assert(rule.action == ACT_RATE_LIMIT);
-    int ncpus = libbpf_num_possible_cpus();
-    if (ncpus < 1) ncpus = 1;
+    int ncpus = compiler::online_cpu_count();
     assert(rule.rate_bps == 10000000000ULL / ncpus);
     assert(rule.dscp == 0);
     assert(rule.cos == 0);

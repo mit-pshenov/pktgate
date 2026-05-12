@@ -4,11 +4,12 @@ Last touched: 2026-05-12. Project on pause; main is shippable. Start here.
 
 ## 30-second status
 
-10/10 P0, 8/22 P1, 1 NEW P0-class, LICENSE — all landed on main between
-`7d265e6` and `1a6fef4`. Unit + integration + BPF data-plane tests are
-green in CI. Functional tests are 104/104 green over three back-to-back
-full-suite runs after the #13 capture-direction fix (see §functional-flake).
-The `continue-on-error` shield has been removed from the functional CI job.
+10/10 P0, 10/22 P1, 1 NEW P0-class, LICENSE — all landed on main between
+`7d265e6` and the rate-limit pair commit. Unit + integration + BPF data-plane
+tests are green in CI. Functional tests are 104/104 green over three
+back-to-back full-suite runs after the #13 capture-direction fix
+(see §functional-flake). The `continue-on-error` shield has been removed
+from the functional CI job.
 
 The `_review/99_REPORT.md` is the canonical map. Every closed finding
 has an inline `[RESOLVED 2026-05-12]` marker; one is `[PARTIAL]` — see
@@ -60,11 +61,6 @@ Tracked entries in `99_REPORT.md` that DIDN'T get `[RESOLVED]`:
   check in `attach_tc()`.
 - **#5 generation rollback is broken/dead** — only fires under test mocks. Either
   pre-populate `prog_array_0`/`default_action_0` or delete `rollback()`.
-- **#6 rate-limit divisor uses `libbpf_num_possible_cpus`** — should be online
-  CPUs. Carrier-Gi sees ~1000× under-rate-limiting on NR_CPUS=8192 kernels.
-- **#7 rate_state_map shared across generations, never GC'd** — entries leak
-  until MAX_RATE_ENTRIES=4096, then rate-limit silently disables. No
-  `bpf_map_delete_elem` call exists anywhere in userspace.
 - **#10 no compile-time enforcement of per-map size limits** — `-E2BIG` at
   deploy time leaves shadow partially populated.
 - **#12 no file-size guard on config-file load** — OOM via huge JSON.

@@ -100,6 +100,53 @@ MapManager::batch_update(int map_fd, const void* keys, const void* values,
     return std::unexpected(std::string("batch update failed: ") + std::strerror(errno));
 }
 
+std::expected<size_t, std::string>
+MapManager::prune_u32_keys_not_in(int map_fd,
+                                   const std::unordered_set<uint32_t>& keep) {
+    // Two-phase to avoid mutating the map during iteration: collect first,
+    // then delete. The kernel allows delete-during-iterate but the semantics
+    // are subtle (see clear_hash_map above); copying the keys is cheap and
+    // makes the loop trivially correct.
+    std::vector<uint32_t> to_delete;
+    uint32_t key = 0;
+    uint32_t next_key = 0;
+    bool first = true;
+
+    for (;;) {
+        int ret;
+        if (first) {
+            ret = bpf_map_get_next_key(map_fd, nullptr, &next_key);
+            first = false;
+        } else {
+            ret = bpf_map_get_next_key(map_fd, &key, &next_key);
+        }
+        if (ret != 0) {
+            if (errno != ENOENT) {
+                return std::unexpected(std::string("prune get_next_key: ")
+                                       + std::strerror(errno));
+            }
+            break;
+        }
+        if (!keep.contains(next_key))
+            to_delete.push_back(next_key);
+        key = next_key;
+    }
+
+    size_t deleted = 0;
+    for (uint32_t k : to_delete) {
+        if (bpf_map_delete_elem(map_fd, &k) < 0) {
+            // ENOENT is fine — concurrent state, key gone before we got to it.
+            if (errno != ENOENT) {
+                return std::unexpected(std::string("prune delete: ")
+                                       + std::strerror(errno));
+            }
+            continue;
+        }
+        ++deleted;
+    }
+    return deleted;
+}
+
 std::expected<void, std::string>
 MapManager::delete_keys(int map_fd, const std::vector<std::vector<uint8_t>>& keys) {
     int errors = 0;

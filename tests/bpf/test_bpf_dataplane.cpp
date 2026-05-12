@@ -16,6 +16,7 @@
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <unordered_set>
 #include <vector>
 #include <cstdint>
 #include <arpa/inet.h>
@@ -1827,26 +1828,35 @@ TEST(test_tc_ipv6_tag_does_not_corrupt) {
 
 TEST(test_l4_rate_limit_depletion) {
     // Verify rate limiter drops when tokens are exhausted.
-    // rate_state_map is PERCPU — must write per-cpu values from userspace.
-    // Strategy: pre-populate rate_state with tokens=0, tiny rate (8000 bps = 1000 B/s),
-    // and recent last_refill. Even after 1s max refill, tokens=1 < packet size → DROP.
+    //
+    // After P1#7 the BPF program reads `rate_bps` from the live l4_rule
+    // every packet, not from cached state. So we temporarily lower the
+    // TCP:443 rule's rate to a value where even a full 1s refill cannot
+    // top up tokens past one MTU-sized packet.
+    using MM = pktgate::loader::MapManager;
+
+    struct l4_match_key l4_tcp443 = { .protocol = 6, ._pad = 0, .dst_port = 443 };
+    struct l4_rule restore{};
+    bpf_map_lookup_elem(loader.l4_rules_fd(0), &l4_tcp443, &restore);
+
+    struct l4_rule slow = restore;
+    slow.rate_bps = 8000;  // 1000 bytes/s → 1s refill cap = 1000 < 1414
+    auto r = MM::update_elem(loader.l4_rules_fd(0), &l4_tcp443, &slow, BPF_ANY);
+    assert(r.has_value());
 
     uint32_t rid = 102; // TCP:443 rule
     bpf_map_delete_elem(loader.rate_state_fd(), &rid);
 
-    // Per-CPU map needs one value per CPU
+    // Pre-populate per-CPU state: tokens=0, recent last_refill. rate_state has
+    // no rate_bps field any more — datapath reads rate from the rule.
     int ncpus = libbpf_num_possible_cpus();
     std::vector<struct rate_state> percpu_rs(ncpus);
-
-    // Get approximate ktime for last_refill
     struct timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-
     for (int i = 0; i < ncpus; i++) {
         percpu_rs[i].tokens = 0;
         percpu_rs[i].last_refill = now_ns;
-        percpu_rs[i].rate_bps = 8000; // 1000 bytes/sec → max 1s refill = 1000 < 1414
     }
     bpf_map_update_elem(loader.rate_state_fd(), &rid, percpu_rs.data(), BPF_ANY);
 
@@ -1861,6 +1871,127 @@ TEST(test_l4_rate_limit_depletion) {
     assert(res.retval == XDP_DROP);
 
     bpf_map_delete_elem(loader.rate_state_fd(), &rid);
+    // Restore the rule for any later tests.
+    MM::update_elem(loader.l4_rules_fd(0), &l4_tcp443, &restore, BPF_ANY);
+}
+
+TEST(test_prune_u32_keys_not_in) {
+    // Direct test of the helper that backs P1#7's rate_state_map GC:
+    // insert a known set of u32 keys, prune everything not in the keep set,
+    // verify exactly the kept keys remain. Run against rate_state_map
+    // (PERCPU_HASH) to exercise the real map type the helper is used with.
+    using MM = pktgate::loader::MapManager;
+    int fd = loader.rate_state_fd();
+    assert(fd >= 0);
+
+    // Clean slate
+    MM::clear_hash_map(fd);
+
+    int ncpus = libbpf_num_possible_cpus();
+    std::vector<struct rate_state> filler(ncpus);
+    for (int i = 0; i < ncpus; i++) {
+        filler[i].tokens = 0;
+        filler[i].last_refill = 0;
+    }
+
+    std::vector<uint32_t> all_keys = {10, 20, 30, 40, 50};
+    for (uint32_t k : all_keys) {
+        int ret = bpf_map_update_elem(fd, &k, filler.data(), BPF_ANY);
+        assert(ret == 0);
+    }
+
+    // Keep 20 and 40; expect 10, 30, 50 deleted.
+    std::unordered_set<uint32_t> keep = {20, 40};
+    auto res = MM::prune_u32_keys_not_in(fd, keep);
+    assert(res.has_value());
+    assert(*res == 3);
+
+    // Verify survivors
+    for (uint32_t k : all_keys) {
+        std::vector<struct rate_state> rb(ncpus);
+        int ret = bpf_map_lookup_elem(fd, &k, rb.data());
+        if (keep.contains(k)) {
+            assert(ret == 0 && "kept key disappeared");
+        } else {
+            assert(ret != 0 && "pruned key still present");
+        }
+    }
+
+    // Second prune is a no-op (nothing to delete)
+    auto res2 = MM::prune_u32_keys_not_in(fd, keep);
+    assert(res2.has_value());
+    assert(*res2 == 0);
+
+    // Empty keep-set clears the rest
+    auto res3 = MM::prune_u32_keys_not_in(fd, {});
+    assert(res3.has_value());
+    assert(*res3 == 2);
+
+    // Cleanup
+    MM::clear_hash_map(fd);
+}
+
+TEST(test_l4_rate_limit_uses_current_rule_rate) {
+    // Closes P1#7-related stale-rate bug: previously do_rate_limit cached
+    // rate_bps in rate_state on first packet, so a reload that changed the
+    // rule's rate had no effect until the userspace state was cleared. Now
+    // the datapath always reads rate from rule->rate_bps. We simulate the
+    // post-reload condition by leaving stale state in place with a
+    // mismatched rule rate and verifying the *new* rule rate decides
+    // whether tokens cover the packet.
+    using MM = pktgate::loader::MapManager;
+
+    struct l4_match_key l4_tcp443 = { .protocol = 6, ._pad = 0, .dst_port = 443 };
+    struct l4_rule restore{};
+    bpf_map_lookup_elem(loader.l4_rules_fd(0), &l4_tcp443, &restore);
+
+    // Step 1: install slow rule + zero tokens → next packet must DROP.
+    struct l4_rule slow = restore;
+    slow.rate_bps = 8000;
+    MM::update_elem(loader.l4_rules_fd(0), &l4_tcp443, &slow, BPF_ANY);
+
+    uint32_t rid = 102;
+    int ncpus = libbpf_num_possible_cpus();
+    std::vector<struct rate_state> rs(ncpus);
+    struct timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    for (int i = 0; i < ncpus; i++) { rs[i].tokens = 0; rs[i].last_refill = now_ns; }
+    bpf_map_update_elem(loader.rate_state_fd(), &rid, rs.data(), BPF_ANY);
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.1"), ip_nbo("10.0.0.2"), IPPROTO_TCP, 1380)
+        .tcp(1234, 443);
+    pkt.pad(1414);
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+
+    // Step 2: simulate a reload that raises the rate to 1Gbps. State stays
+    // stale (tokens=0). Without the fix, refill would still be computed
+    // against rs->rate_bps=8000 and the next 1414-byte packet would DROP.
+    // With the fix, refill uses rule->rate_bps=1Gbps, the bucket fills
+    // instantly (cap = 125MB), the packet passes.
+    struct l4_rule fast = restore;
+    fast.rate_bps = 1000000000ULL;
+    MM::update_elem(loader.l4_rules_fd(0), &l4_tcp443, &fast, BPF_ANY);
+
+    // Bump last_refill back by 100ms. At 1Gbps that refills 12.5 MB —
+    // capped to 1s burst (125 MB), more than enough to cover one 1414-byte
+    // packet. (Integer-rounding in the BPF refill formula needs elapsed in
+    // the millisecond range to produce a useful refill at this rate.)
+    for (int i = 0; i < ncpus; i++) {
+        rs[i].tokens = 0;
+        rs[i].last_refill = now_ns - 100'000'000ULL;
+    }
+    bpf_map_update_elem(loader.rate_state_fd(), &rid, rs.data(), BPF_ANY);
+
+    res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+
+    bpf_map_delete_elem(loader.rate_state_fd(), &rid);
+    MM::update_elem(loader.l4_rules_fd(0), &l4_tcp443, &restore, BPF_ANY);
 }
 
 TEST(test_l4_tcp_flags_partial_mismatch) {

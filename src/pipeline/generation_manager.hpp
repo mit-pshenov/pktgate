@@ -7,6 +7,7 @@
 #include <atomic>
 #include <expected>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace pktgate::pipeline {
@@ -58,6 +59,10 @@ private:
     // (LPM_TRIE does not support iteration)
     std::vector<std::vector<uint8_t>> lpm_keys_[2];
     std::vector<std::vector<uint8_t>> lpm6_keys_[2];
+
+    // rule_ids of RATE_LIMIT rules per generation. Filled by prepare(),
+    // consumed by commit() to prune stale rate_state_map entries (P1#7).
+    std::unordered_set<uint32_t> rate_rule_ids_[2];
 };
 
 } // namespace pktgate::pipeline

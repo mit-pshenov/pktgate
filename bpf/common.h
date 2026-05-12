@@ -284,7 +284,6 @@ enum stat_key {
 struct rate_state {
     __u64 tokens;       /* remaining tokens (bytes) */
     __u64 last_refill;  /* last refill timestamp (ns) */
-    __u64 rate_bps;     /* configured rate in bytes/sec */
 };
 
 #endif /* FILTER_BPF_COMMON_H */

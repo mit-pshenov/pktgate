@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <expected>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace pktgate::loader {
@@ -33,6 +34,15 @@ public:
     /// Use for LPM_TRIE maps where iteration is not supported.
     static std::expected<void, std::string>
     delete_keys(int map_fd, const std::vector<std::vector<uint8_t>>& keys);
+
+    /// Delete every u32-keyed entry whose key is NOT in `keep`. Returns the
+    /// number of entries removed. Designed for the rate_state_map cleanup
+    /// after a generation swap (P1#7): keys absent from the new ruleset
+    /// would otherwise sit forever and eventually exhaust the 4096-entry
+    /// cap, silently disabling rate-limiting.
+    static std::expected<size_t, std::string>
+    prune_u32_keys_not_in(int map_fd,
+                          const std::unordered_set<uint32_t>& keep);
 };
 
 } // namespace pktgate::loader

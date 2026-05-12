@@ -3,10 +3,22 @@
 #include <arpa/inet.h>
 #include <bpf/libbpf.h>
 #include <cstring>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace pktgate::compiler {
+
+/// Number of CPUs that may actually run the BPF datapath. Used to divide a
+/// configured aggregate rate across the per-CPU token buckets. Must be ONLINE
+/// (not "possible"), because possible-CPU kernels with large NR_CPUS (e.g.
+/// 8192 on stock 6.x) under-rate-limit by ~3 orders of magnitude when only a
+/// handful of CPUs ever process traffic.
+int online_cpu_count() {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n < 1) return 1;
+    return static_cast<int>(n);
+}
 
 static uint32_t action_to_bpf(config::Action a) {
     switch (a) {
@@ -259,14 +271,17 @@ compile_rules(const config::Pipeline& pipeline,
                     auto total_bps = config::parse_bandwidth(*rule.params.bandwidth);
                     /*
                      * rate_state_map is PERCPU — each CPU runs an independent
-                     * token bucket.  Divide the configured rate evenly so the
-                     * aggregate across all CPUs approximates the user's intent.
-                     * Assumes roughly even RSS distribution; worst-case skew
-                     * is bounded by single-CPU share.
+                     * token bucket. Divide the configured rate by ONLINE CPUs
+                     * so the aggregate across active CPUs approximates the
+                     * user's intent. Possible-CPU kernels (NR_CPUS up to 8192
+                     * on modern stock kernels) made this divisor 3 orders of
+                     * magnitude too large when only ~8 CPUs ever processed
+                     * traffic — the rate-limit barely engaged. Assumes roughly
+                     * even RSS distribution; worst-case skew is bounded by
+                     * single-CPU share.
                      */
                     if (total_bps > 0) {
-                        int ncpus = libbpf_num_possible_cpus();
-                        if (ncpus < 1) ncpus = 1;
+                        int ncpus = online_cpu_count();
                         cr.rule.rate_bps = total_bps / static_cast<uint64_t>(ncpus);
                         if (cr.rule.rate_bps == 0) cr.rule.rate_bps = 1;
                     }

@@ -270,10 +270,41 @@ TEST(test_rate_limit_compilation) {
 
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
-    int ncpus = libbpf_num_possible_cpus();
-    if (ncpus < 1) ncpus = 1;
+    int ncpus = compiler::online_cpu_count();
     assert(result->l4_rules[0].rule.rate_bps == 1000000000ULL / ncpus);
     assert(result->l4_rules[0].rule.action == 5); // ACT_RATE_LIMIT
+}
+
+TEST(test_online_cpu_count_bounds) {
+    // Sanity: must be at least 1 and not exceed possible-CPU count (online is
+    // a subset of possible). Anchors the contract that divisor is sensible
+    // and prevents accidental reversion to libbpf_num_possible_cpus.
+    int online   = compiler::online_cpu_count();
+    int possible = libbpf_num_possible_cpus();
+    assert(online >= 1);
+    assert(online <= possible);
+}
+
+TEST(test_rate_limit_divisor_uses_online_cpus) {
+    // 100Mbps / online_cpus should equal the per-CPU rate the compiler
+    // installs. If anyone reverts to num_possible_cpus on a kernel with
+    // NR_CPUS >> online (e.g. 8192 vs 8), this asserts hard instead of
+    // silently producing 1000× under-rate-limiting in production.
+    config::ObjectStore objects;
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 42;
+    r.match.protocol = "UDP";
+    r.match.dst_port = "5060";
+    r.action = config::Action::RateLimit;
+    r.params.bandwidth = "100Mbps";
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    uint64_t expected = 100'000'000ULL / static_cast<uint64_t>(
+                            compiler::online_cpu_count());
+    assert(result->l4_rules[0].rule.rate_bps == expected);
 }
 
 // ── Resolver interaction ────────────────────────────────────

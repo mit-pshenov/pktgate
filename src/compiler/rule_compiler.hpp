@@ -59,4 +59,8 @@ compile_rules(const config::Pipeline& pipeline,
               const config::ObjectStore& objects,
               IfindexResolver resolver);
 
+/// Online CPU count used to divide an aggregate rate across per-CPU
+/// token buckets. Always >= 1. Exposed for testing.
+int online_cpu_count();
+
 } // namespace pktgate::compiler

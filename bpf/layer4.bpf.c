@@ -20,14 +20,21 @@
 static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
 {
     __u32 rid = rule->rule_id;
+    /*
+     * Always source the rate from rule->rate_bps (current generation),
+     * never from a cached rs->rate_bps. A reload that changes a rule's
+     * bandwidth must take effect on the next packet, not on the next
+     * userspace map-delete — which only happens at generation swap and
+     * was previously the only way to refresh the stored rate. (P1#7)
+     */
+    __u64 rate_bytes_per_sec = rule->rate_bps / 8;
 
     struct rate_state *rs = bpf_map_lookup_elem(&rate_state_map, &rid);
     if (!rs) {
         /* First packet for this rule — initialize with BPF_ANY to handle race */
         struct rate_state init = {
-            .tokens     = rule->rate_bps / 8,
+            .tokens     = rate_bytes_per_sec,
             .last_refill = bpf_ktime_get_ns(),
-            .rate_bps   = rule->rate_bps,
         };
         bpf_map_update_elem(&rate_state_map, &rid, &init, BPF_ANY);
         STAT_COUNT(STAT_RATE_LIMIT_PASS, pkt_len);
@@ -37,7 +44,6 @@ static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
     /* Refill tokens based on elapsed time */
     __u64 now = bpf_ktime_get_ns();
     __u64 elapsed_ns = now - rs->last_refill;
-    __u64 rate_bytes_per_sec = rs->rate_bps / 8;
 
     /*
      * Refill calculation avoiding overflow:

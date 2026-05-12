@@ -267,6 +267,16 @@ GenerationManager::prepare(const compiler::CompiledObjects& objects,
         return r;
     }
 
+    // Capture the rule_ids of every RATE_LIMIT rule in this generation so
+    // commit() can prune stale entries from the shared rate_state_map after
+    // the swap (P1#7). Tracked per-generation because the active set the
+    // datapath uses flips atomically with gen_config.
+    rate_rule_ids_[gen].clear();
+    for (auto& cr : rules.l4_rules) {
+        if (cr.rule.action == ACT_RATE_LIMIT)
+            rate_rule_ids_[gen].insert(cr.rule.rule_id);
+    }
+
     r = set_default_action(gen, default_action);
     if (!r) {
         clear_shadow_maps(gen);
@@ -310,6 +320,25 @@ GenerationManager::commit() {
      * complete within a few microseconds. 100ms is very conservative.
      */
     usleep(100000);
+
+    /*
+     * GC rate_state_map: drop entries whose rule_id is no longer a
+     * rate-limit rule in the now-active generation (P1#7). Done AFTER the
+     * swap + drain so we never delete state the datapath might still be
+     * consulting. Pruning before the swap would also risk a re-init race
+     * if a stale rule kept firing on the old generation. Best-effort —
+     * a transient kernel error here doesn't break correctness, it only
+     * delays the leak cleanup until the next reload.
+     */
+    if (loader_.rate_state_fd() >= 0) {
+        auto pr = loader::MapManager::prune_u32_keys_not_in(
+            loader_.rate_state_fd(), rate_rule_ids_[new_gen]);
+        if (!pr) {
+            LOG_WRN("rate_state_map prune failed: %s", pr.error().c_str());
+        } else if (*pr > 0) {
+            LOG_INF("rate_state_map: pruned %zu stale entries", *pr);
+        }
+    }
     return {};
 }
 

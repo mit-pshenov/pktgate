@@ -177,8 +177,7 @@ TEST(test_full_compile_pipeline) {
     // Verify L4 rules
     assert(rules->l4_rules[0].match.protocol == 6);
     assert(rules->l4_rules[0].match.dst_port == 80);
-    int ncpus1 = libbpf_num_possible_cpus();
-    if (ncpus1 < 1) ncpus1 = 1;
+    int ncpus1 = compiler::online_cpu_count();
     assert(rules->l4_rules[0].rule.rate_bps == 1000000000ULL / ncpus1);
     assert(rules->l4_rules[1].match.dst_port == 443);
 }
@@ -250,8 +249,7 @@ TEST(test_compile_complex_multi_layer) {
     assert(rules->l4_rules[0].rule.cos == 5);
 
     assert(rules->l4_rules[1].match.protocol == 6); // TCP
-    int ncpus2 = libbpf_num_possible_cpus();
-    if (ncpus2 < 1) ncpus2 = 1;
+    int ncpus2 = compiler::online_cpu_count();
     assert(rules->l4_rules[1].rule.rate_bps == 10000000000ULL / ncpus2);
 }
 
