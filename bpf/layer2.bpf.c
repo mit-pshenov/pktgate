@@ -12,7 +12,13 @@
  *   src_mac → dst_mac → ethertype → vlan_id → pcp
  * After primary lookup, secondary filter fields are checked (compound rules).
  * First full match wins — its action is executed.
- * No match → tail call to Layer 3 (backward compat).
+ *
+ * On no match:
+ *   - If LAYER_PRESENT_L2 is set (this generation deployed at least one L2
+ *     rule), apply the configured default_behavior. Operator intent says
+ *     "rules exist, none matched → fall back to default".
+ *   - Otherwise the L2 layer is effectively empty (e.g. an L3-only config),
+ *     so we skip to Layer 3 without opinion.
  */
 
 /* Check secondary filter fields on a matched rule.
@@ -32,6 +38,24 @@ static __always_inline bool l2_filters_match(struct l2_rule *rule,
     if ((mask & L2_FILTER_PCP) && rule->filter_pcp != pcp)
         return false;
     return true;
+}
+
+/* Apply the configured default_behavior at L2 no-match.
+ * Mirrors get_default_action() in layer3.bpf.c — the global default_action
+ * map is shared across layers. */
+static __always_inline int get_default_action_l2(struct pkt_meta *meta)
+{
+    __u32 key = 0;
+    __u32 *def = (meta->generation == 0)
+        ? bpf_map_lookup_elem(&default_action_0, &key)
+        : bpf_map_lookup_elem(&default_action_1, &key);
+
+    if (!def || *def == ACT_DROP) {
+        STAT_INC(STAT_DROP_L2_NO_MATCH);
+        return XDP_DROP;
+    }
+    STAT_INC(STAT_PASS_L2);
+    return XDP_PASS;
 }
 
 static __always_inline int handle_l2_action(struct xdp_md *ctx,
@@ -196,14 +220,24 @@ int layer2_prog(struct xdp_md *ctx)
         }
     }
 
-    /* ── No match — proceed to Layer 3 (backward compat) ──── */
+    /* ── No match ──────────────────────────────────────────── */
+    __u32 lp_key = 0;
+    __u8 *lp = (gen == 0) ? bpf_map_lookup_elem(&layer_present_0, &lp_key)
+                          : bpf_map_lookup_elem(&layer_present_1, &lp_key);
+    if (lp && (*lp & LAYER_PRESENT_L2)) {
+        /* L2 has rules; none matched → apply default_behavior */
+        BPF_DBG("L2: no match, applying default, gen=%d", gen);
+        return get_default_action_l2(meta);
+    }
+
+    /* L2 is empty for this generation → skip to Layer 3 unchanged */
     if (gen == 0)
         bpf_tail_call(ctx, &prog_array_0, LAYER_3_IDX);
     else
         bpf_tail_call(ctx, &prog_array_1, LAYER_3_IDX);
 
-    STAT_INC(STAT_DROP_L2_NO_MATCH);
-    BPF_DBG("L2: no match and L3 tail call failed, gen=%d", gen);
+    STAT_INC(STAT_DROP_L2_TAIL);
+    BPF_DBG("L2: empty + L3 tail call failed, gen=%d", gen);
     return XDP_DROP;
 }
 

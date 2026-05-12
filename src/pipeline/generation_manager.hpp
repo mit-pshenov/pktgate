@@ -48,6 +48,8 @@ private:
         uint32_t gen, const compiler::CompiledRules& rules);
     std::expected<void, std::string> set_default_action(
         uint32_t gen, config::Action action);
+    std::expected<void, std::string> set_layer_present(
+        uint32_t gen, const compiler::CompiledRules& rules);
 
     std::atomic<uint32_t> active_gen_{0};
     loader::BpfLoader& loader_;

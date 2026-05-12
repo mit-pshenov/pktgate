@@ -195,6 +195,24 @@ struct {
     __type(value, __u32);
 } default_action_1 SEC(".maps");
 
+/* ── Layer-present mask (one per generation) ───────────────── */
+/* See LAYER_PRESENT_* bits in common.h. Layer applies default_behavior on
+ * no-match iff its bit is set; otherwise it skips to the next layer. */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u8);
+} layer_present_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u8);
+} layer_present_1 SEC(".maps");
+
 /* ── Statistics counters (shared, not double-buffered) ─────── */
 
 struct {

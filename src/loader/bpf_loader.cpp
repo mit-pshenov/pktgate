@@ -103,6 +103,8 @@ std::expected<void, std::string> BpfLoader::load() {
         REUSE_MAP(l4_rules_1);
         REUSE_MAP(default_action_0);
         REUSE_MAP(default_action_1);
+        REUSE_MAP(layer_present_0);
+        REUSE_MAP(layer_present_1);
         REUSE_MAP(rate_state_map);
         REUSE_MAP(stats_map);
 
@@ -338,6 +340,13 @@ int BpfLoader::default_action_fd(uint32_t gen) const {
     return gen == 0
         ? bpf_map__fd(impl_->entry->maps.default_action_0)
         : bpf_map__fd(impl_->entry->maps.default_action_1);
+}
+
+int BpfLoader::layer_present_fd(uint32_t gen) const {
+    if (!impl_->entry) return -1;
+    return gen == 0
+        ? bpf_map__fd(impl_->entry->maps.layer_present_0)
+        : bpf_map__fd(impl_->entry->maps.layer_present_1);
 }
 
 int BpfLoader::gen_config_fd() const {

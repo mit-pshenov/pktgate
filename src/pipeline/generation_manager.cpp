@@ -226,6 +226,22 @@ GenerationManager::set_default_action(uint32_t gen, config::Action action) {
 }
 
 std::expected<void, std::string>
+GenerationManager::set_layer_present(uint32_t gen,
+                                      const compiler::CompiledRules& rules) {
+    int fd = loader_.layer_present_fd(gen);
+    uint32_t key = 0;
+    // Keep bit layout in sync with LAYER_PRESENT_* in bpf/common.h
+    uint8_t mask = 0;
+    if (!rules.l2_rules.empty())                        mask |= 0x01;
+    if (!rules.l3_rules.empty())                        mask |= 0x02;
+    if (!rules.l4_rules.empty())                        mask |= 0x04;
+
+    auto r = loader::MapManager::update_elem(fd, &key, &mask, BPF_ANY);
+    if (!r) return std::unexpected("layer_present: " + r.error());
+    return {};
+}
+
+std::expected<void, std::string>
 GenerationManager::prepare(const compiler::CompiledObjects& objects,
                            const compiler::CompiledRules& rules,
                            config::Action default_action) {
@@ -268,6 +284,12 @@ GenerationManager::prepare(const compiler::CompiledObjects& objects,
     }
 
     r = set_default_action(gen, default_action);
+    if (!r) {
+        clear_shadow_maps(gen);
+        return r;
+    }
+
+    r = set_layer_present(gen, rules);
     if (!r) {
         clear_shadow_maps(gen);
         return r;

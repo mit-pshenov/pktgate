@@ -96,6 +96,16 @@ struct vlan_key {
     __u16 _pad;
 };
 
+/* ── Per-generation pipeline flags ─────────────────────────── */
+
+/* layer_present mask: which layers carry rules in the current generation.
+ * Each layer applies default_behavior on no-match iff its bit is set; layers
+ * with no rules skip to the next layer without opinion (preserves "L3-only"
+ * config ergonomics). Per-layer default_behavior is a planned follow-up. */
+#define LAYER_PRESENT_L2  (1 << 0)
+#define LAYER_PRESENT_L3  (1 << 1)
+#define LAYER_PRESENT_L4  (1 << 2)
+
 /* ── Rule structures ───────────────────────────────────────── */
 
 /* Layer 2 rule — stored as value in L2 hash maps */
@@ -185,7 +195,7 @@ enum stat_key {
     /* Layer 2 */
     STAT_DROP_L2_BOUNDS      = 4,
     STAT_DROP_L2_NO_META     = 5,
-    STAT_DROP_L2_NO_MATCH    = 6,   /* no L2 rule matched (was NO_MAC) */
+    STAT_DROP_L2_NO_MATCH    = 6,   /* L2 has rules, none matched → default_behavior=drop */
     STAT_DROP_L2_TAIL        = 7,
     STAT_DROP_L2_RULE        = 37,  /* explicit DROP action in L2 rule */
     STAT_PASS_L2             = 38,  /* L2 rule matched, pass/allow */

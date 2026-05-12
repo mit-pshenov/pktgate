@@ -30,8 +30,11 @@ pktgate configuration is a single JSON file that defines:
 3. **Default behavior** -- what happens when no rule matches
 
 Packets flow through the pipeline top to bottom. Each layer can terminate
-(allow/drop) or forward to the next layer via `next_layer`. If no rule
-matches in a layer, the `default_behavior` applies.
+(allow/drop) or forward to the next layer via `next_layer`. If a layer has
+rules and none match, `default_behavior` applies. An **empty** layer (e.g.
+`layer_2: []`) is skipped — the packet proceeds to the next non-empty layer
+without an opinion, so an L3-only config doesn't have to spell out an
+allow-all L2 rule just to keep traffic flowing.
 
 Config is validated against [config-schema.json](config-schema.json)
 and can be checked without loading BPF programs:

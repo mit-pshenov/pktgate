@@ -316,8 +316,8 @@ TEST(test_l2_known_mac_passes) {
 }
 
 TEST(test_l2_unknown_mac_falls_through) {
-    // New L2 architecture: no match → fall through to L3.
-    // Unknown MAC has no L2 rule → tail call to L3.
+    // layer_present.L2 is unset in setup_standard_config, so L2 no-match
+    // falls through to L3 (the "L3-only config" ergonomic path).
     // Use 192.168.1.100 (L3 DROP rule) to verify full pipeline drop.
     auto pkt = PacketBuilder()
         .eth(UNKNOWN_MAC, DST_MAC, ETH_P_IP)
@@ -373,7 +373,7 @@ TEST(test_l2_truncated_packet_dropped) {
 }
 
 TEST(test_l2_broadcast_mac_no_match) {
-    // Broadcast MAC has no L2 rule → falls through to L3.
+    // Broadcast MAC has no L2 rule → falls through to L3 (layer_present.L2 unset).
     // Use 192.168.1.100 (L3 DROP) so pipeline ultimately drops.
     uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     auto pkt = PacketBuilder()
@@ -385,6 +385,64 @@ TEST(test_l2_broadcast_mac_no_match) {
     auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
     assert(res.ok);
     assert(res.retval == XDP_DROP); // dropped at L3 (192.168.1.0/24 → DROP)
+}
+
+TEST(test_l2_layer_present_default_drop_unknown_mac) {
+    // With LAYER_PRESENT_L2 set, an unknown MAC must hit L2 default_behavior
+    // (DROP) — NOT fall through to L3. Target IP 10.0.0.x is L3-ALLOW, so any
+    // fallthrough would yield XDP_PASS at L4 (TCP:80 allow). XDP_DROP proves
+    // the default action fired at L2.
+    using MM = pktgate::loader::MapManager;
+
+    uint32_t key = 0;
+    uint8_t mask = LAYER_PRESENT_L2;
+    auto r = MM::update_elem(loader.layer_present_fd(0), &key, &mask, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(UNKNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.5"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+    auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+
+    // Clean up — restore "empty L2 layer" flag for sibling tests.
+    mask = 0;
+    MM::update_elem(loader.layer_present_fd(0), &key, &mask, BPF_ANY);
+}
+
+TEST(test_l2_layer_present_default_allow_unknown_mac) {
+    // With LAYER_PRESENT_L2 set and default_action=ALLOW, an unknown MAC must
+    // PASS at L2 (no fallthrough to L3). Use 192.168.1.100 as src — would be
+    // L3-DROPped on fallthrough; XDP_PASS proves L2 stopped the walk.
+    using MM = pktgate::loader::MapManager;
+
+    uint32_t key = 0;
+    uint8_t mask = LAYER_PRESENT_L2;
+    auto r = MM::update_elem(loader.layer_present_fd(0), &key, &mask, BPF_ANY);
+    assert(r.has_value());
+
+    uint32_t da_key = 0;
+    uint32_t da_val = ACT_ALLOW;
+    r = MM::update_elem(loader.default_action_fd(0), &da_key, &da_val, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(UNKNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("192.168.1.100"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+    auto res = run_xdp_prog(loader.layer2_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+
+    // Clean up — restore defaults for sibling tests.
+    mask = 0;
+    MM::update_elem(loader.layer_present_fd(0), &key, &mask, BPF_ANY);
+    da_val = ACT_DROP;
+    MM::update_elem(loader.default_action_fd(0), &da_key, &da_val, BPF_ANY);
 }
 
 // ═══════════════════════════════════════════════════════════

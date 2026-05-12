@@ -108,7 +108,16 @@ struct l2_rule {
 
 // 802.1Q parsing: если h_proto == 0x8100, извлекается vlan_id
 // и inner ethertype. QinQ (0x88a8) не парсится.
-// No match → tail_call(LAYER_3) (backward compat)
+//
+// On no match L2 consults layer_present_{gen}[0]:
+//   - bit LAYER_PRESENT_L2 set → apply configured default_behavior
+//     (mirrors L3/L4: STAT_DROP_L2_NO_MATCH on drop, STAT_PASS_L2 on allow).
+//   - bit unset → skip to Layer 3 unchanged (preserves "L3-only config" UX
+//     where layer_2: [] is treated as no opinion, not "drop everything").
+// The flag is populated at deploy time by GenerationManager::set_layer_present
+// from `rules.l2_rules.empty()`. A planned follow-up adds per-layer
+// default_behavior so operators can be explicit instead of relying on
+// emptiness-as-skip.
 ```
 
 ### 3.3. Layer 3 — IP / VRF Filtering
@@ -193,6 +202,7 @@ drop/allow/redirect — используется чистый XDP. Если ес
 │ vrf_rules_0/1          │ HASH(256)            │ vrf_key → l3_rule            │
 │ l4_rules_0/1           │ HASH(4096)           │ l4_match_key → l4_rule       │
 │ default_action_0/1     │ ARRAY(1)             │ 0 → __u32 (filter_action)    │
+│ layer_present_0/1      │ ARRAY(1)             │ 0 → __u8 (LAYER_PRESENT_*)   │
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
 │ rate_state_map         │ PERCPU_HASH(4096)    │ rule_id → rate_state         │
 │ stats_map              │ PERCPU_ARRAY(40)     │ stat_key → __u64 (counter)   │

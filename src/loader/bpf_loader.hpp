@@ -37,6 +37,7 @@ public:
     int l4_rules_fd(uint32_t gen) const;
     int prog_array_fd(uint32_t gen) const;
     int default_action_fd(uint32_t gen) const;
+    int layer_present_fd(uint32_t gen) const;
     int gen_config_fd() const;
     int rate_state_fd() const;
     int stats_map_fd() const;
