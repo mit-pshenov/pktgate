@@ -87,6 +87,25 @@ static void validate_l3_rules(const std::vector<Rule>& rules,
         auto& r = rules[i];
         std::string ctx = "layer_3[" + std::to_string(i) + "]";
 
+        // dst_ip / dst_ip6 are parsed into the model but no destination LPM
+        // trie exists in the data plane. Silently compiling them as a 0.0.0.0/0
+        // entry (legacy fall-through in the compiler) turned a narrow drop
+        // into a Gi-blackhole. Reject explicitly until destination LPM lands.
+        if (r.match.dst_ip)
+            errs.push_back({ctx, "dst_ip is not supported as an L3 match field"});
+        if (r.match.dst_ip6)
+            errs.push_back({ctx, "dst_ip6 is not supported as an L3 match field"});
+
+        // L3 rule must specify at least one supported match field. Mirrors the
+        // L2 guard above; without it, a typo (e.g. dst_ip instead of src_ip)
+        // produces a rule with no constraints.
+        int match_count = 0;
+        if (r.match.src_ip)  ++match_count;
+        if (r.match.src_ip6) ++match_count;
+        if (r.match.vrf)     ++match_count;
+        if (match_count == 0)
+            errs.push_back({ctx, "L3 rule must specify a match field (src_ip, src_ip6, or vrf)"});
+
         if (r.match.src_ip)
             check_object_ref(*r.match.src_ip, "subnet", objects.subnets, ctx, errs);
 

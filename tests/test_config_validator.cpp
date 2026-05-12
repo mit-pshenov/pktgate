@@ -426,6 +426,61 @@ TEST(test_l2_no_match_field_rejected) {
     assert(has_error(result.error(), "must specify a match field"));
 }
 
+TEST(test_l3_no_match_field_rejected) {
+    // Mirrors test_l2_no_match_field_rejected (P0-01 from _review/99_REPORT.md).
+    // Without this guard, a typo like dst_ip instead of src_ip produced a rule
+    // with no constraints that the compiler emitted as a 0.0.0.0/0 LPM
+    // wildcard — Gi blackhole on a single character.
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Drop;
+    cfg.pipeline.layer_3.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "must specify a match field"));
+}
+
+TEST(test_l3_dst_ip_rejected) {
+    // dst_ip exists in the parser/model but no destination LPM trie exists in
+    // the data plane. Reject until a real destination trie lands.
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Drop;
+    r.match.dst_ip = "10.0.0.0/8";
+    cfg.pipeline.layer_3.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "dst_ip is not supported"));
+}
+
+TEST(test_l3_dst_ip6_rejected) {
+    Config cfg;
+    Rule r;
+    r.rule_id = 1; r.action = Action::Drop;
+    r.match.dst_ip6 = "fd00::/8";
+    cfg.pipeline.layer_3.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "dst_ip6 is not supported"));
+}
+
+TEST(test_l3_src_ip_accepted) {
+    // Sanity check: the new guard should NOT reject valid src_ip rules.
+    Config cfg;
+    cfg.interface = "eth0";
+    cfg.objects.subnets["allowed"] = {"10.0.0.0/8"};
+    Rule r;
+    r.rule_id = 1; r.action = Action::Allow;
+    r.match.src_ip = "object:allowed";
+    cfg.pipeline.layer_3.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
 TEST(test_l2_dst_mac_object_ref_valid) {
     Config cfg;
     cfg.interface = "eth0";
