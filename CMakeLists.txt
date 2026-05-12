@@ -16,7 +16,9 @@ endif()
 
 # ── Find system dependencies ──────────────────────────────────
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBBPF REQUIRED libbpf)
+# libbpf >= 1.1 pins past CVE-2022-3534 (heap overflow in btf_dump) and matches
+# the RPM spec floor. Older builds-from-source silently linked vulnerable libbpf.
+pkg_check_modules(LIBBPF REQUIRED libbpf>=1.1)
 find_package(nlohmann_json 3.11 REQUIRED)
 
 # ── Clang for BPF compilation ─────────────────────────────────
@@ -130,6 +132,8 @@ target_link_libraries(validate_config PRIVATE pktgate_lib)
 include(GNUInstallDirs)
 
 install(TARGETS pktgate_ctl validate_config RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES LICENSE
+    DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES systemd/pktgate.service
     DESTINATION lib/systemd/system)
 install(FILES sample2.json

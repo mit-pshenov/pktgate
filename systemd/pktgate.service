@@ -19,8 +19,10 @@ Restart=on-failure
 RestartSec=3
 
 # Security hardening
-# NoNewPrivileges must be 'no' — AmbientCapabilities require privilege transition
-NoNewPrivileges=no
+# AmbientCapabilities are inherited at exec from the unit; NoNewPrivileges=yes
+# does NOT block them (that flag only stops new privileges via setuid/setgid,
+# capabilities granted by the unit pass through).
+NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/sys/fs/bpf
@@ -36,12 +38,21 @@ RestrictNamespaces=yes
 SystemCallArchitectures=native
 MemoryDenyWriteExecute=yes
 
+# Narrow the syscall surface to what an eBPF/network daemon needs.
+# Cuts post-exploit blast radius — even if capabilities are subverted, the
+# attacker cannot reach mount(), ptrace(), kexec_load(), etc.
+SystemCallFilter=@system-service @network-io @file-system
+SystemCallFilter=~@mount @reboot @swap @raw-io @cpu-emulation @obsolete
+SystemCallErrorNumber=EPERM
+
 # Resource limits — BPF maps require locked memory
 LimitMEMLOCK=unlimited
 
-# BPF requires these capabilities
-AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_PERFMON
-CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_PERFMON
+# BPF + XDP attach on kernels >= 5.8 need CAP_BPF + CAP_NET_ADMIN + CAP_PERFMON.
+# CAP_SYS_ADMIN is intentionally absent — it would grant mount/ns/kexec/raw-io
+# rights orthogonal to BPF, defeating the rest of this hardening block.
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON
 
 # Logging to journal
 StandardOutput=journal
