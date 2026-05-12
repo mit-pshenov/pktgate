@@ -6,10 +6,9 @@ Last touched: 2026-05-12. Project on pause; main is shippable. Start here.
 
 10/10 P0, 8/22 P1, 1 NEW P0-class, LICENSE — all landed on main between
 `7d265e6` and `1a6fef4`. Unit + integration + BPF data-plane tests are
-green in CI. Functional tests are green in isolation; 2 IPv6 tests in
-`test_l3_ipv6.py` flake under full-suite ordering (see §functional-flake
-below). Functional CI runs with `continue-on-error: true` until that
-ordering issue is fixed.
+green in CI. Functional tests are 104/104 green over three back-to-back
+full-suite runs after the #13 capture-direction fix (see §functional-flake).
+The `continue-on-error` shield has been removed from the functional CI job.
 
 The `_review/99_REPORT.md` is the canonical map. Every closed finding
 has an inline `[RESOLVED 2026-05-12]` marker; one is `[PARTIAL]` — see
@@ -84,8 +83,8 @@ Tracked entries in `99_REPORT.md` that DIDN'T get `[RESOLVED]`:
 **P2:** large catalogue in `99_REPORT.md` §"P2"; nothing operationally severe.
 
 **Tasks created during this round:**
-- `#13` functional test isolation — module-scope landed, residual within-module
-  flake remains. See §functional-flake.
+- `#13` functional test isolation — RESOLVED 2026-05-12. Capture helpers
+  pinned to ingress direction; full suite 104/104 over three runs.
 
 ## Performance (P1#2)
 
@@ -116,40 +115,31 @@ Plan-B from the original mini-design ("keep 5 maps, just fix
 filter_mask + primary selection") is on the table if option (3) or (4)
 doesn't help.
 
-## Functional flake (#13)
+## Functional flake (#13) — RESOLVED 2026-05-12
 
-**Symptom.** 2 IPv6 tests in `test_l3_ipv6.py` fail when run as part of
-the full suite. In isolation: pass. The exact pair varies between runs.
+**Root cause.** Capture helpers in `conftest.py` used `tcpdump -i <iface>
+'<bpf>'` without pinning direction, so kernel-emitted egress from
+`ns_filter` (IPv6 NS for DAD, RS, MLD reports) was being captured on the
+filter veth and treated as "the packet under test made it through XDP".
+Broad filters like `'ip6'` made this far more likely; narrower ones like
+`'tcp port 80'` could still hit `not got_packets` flakes intermittently.
 
-**Investigation done:**
-- Reproduced with as little as ONE preceding `test_l2_mac.py` test.
-- Tried `pktgate` fixture scope=module: reduces but doesn't eliminate.
-- Tried a warm-up packet at fixture startup: no effect on the in-module
-  ordering flake.
-- Confirmed BPF data plane is correct: every L3 IPv6 fragment scenario
-  passes in `tests/bpf/test_bpf_dataplane.cpp` under PROG_TEST_RUN.
+**Fix.** Added `-Q in` to every capture command (`capture_on_filter`,
+`capture_count`, `capture_tos` in `conftest.py`, and `capture_on_mirror`
+in `test_zz_mirror_redirect.py`). This restricts the capture to ingress
+frames — the only direction relevant to "did XDP forward this?". Frames
+the kernel originates inside the filter namespace are egress and are now
+invisible to the tests.
 
-**Hypotheses (unverified):**
-1. libpcap RX-side caching on the veth-pair filter end — tcpdump captures
-   leftover frames from earlier sends.
-2. Kernel ARP/ND cache state in the client namespace primes routing in a
-   way that affects IPv6 fragment packet delivery.
-3. First-packet timing after `gen_config` flip — small delay before XDP
-   is fully serving from the new generation.
-4. `rate_state_map` (P1#7, never GC'd) gets populated by earlier UDP/DNS
-   tag tests and confuses something — unlikely since fragments drop in L3
-   before L4.
+**Verification.** Three back-to-back `sudo bash functional_tests/run.sh`
+runs of the full suite: 104/104 green each time.
 
-**Suggested next steps:**
-1. Add `tcpdump -d` trace to `send_and_check` on failure to see what
-   actually crossed the veth.
-2. Examine stat counters between tests: do `STAT_DROP_L3_V6_FRAGMENT`
-   counters increment when expected? If yes, the BPF dropped but tcpdump
-   saw something else. If no, BPF didn't drop.
-3. Try `bpftrace` on `xdp_do_redirect` / `xdp_metadata_*` to see XDP
-   verdict per packet.
-4. Worst case: fall back to function-scope fixture for `test_l3_ipv6.py`
-   only — adds ~10s to that file but fully isolates each test.
+**Diagnostic that pinpointed it.** Repeating each scenario 5× with
+`tcpdump -e -vv` showed the captures were `ICMP6, router solicitation`
+from the filter-side link-local fe80::… address, not the packet sent by
+scapy. Both fragment-TCP and fragment-UDP packets were correctly dropped
+by BPF; the test's "got something" boolean was responding to ND/RS
+background noise.
 
 ## Memory pointers
 
@@ -188,9 +178,10 @@ e6fe7d8 Wire validate_config into build, compile, CI fixtures (P0-02)
   adding a real destination LPM trie. The validator rejects them
   precisely because the compiler used to silently expand them into
   `0.0.0.0/0`.
-- Don't flip `functional` job to required without closing #13 — you'll
-  block PR merges on a known flaky test set.
-- Don't remove `continue-on-error` from `ci.yml` while #13 is open.
+- Don't add new capture helpers without `-Q in` (or an explicit
+  ingress-only equivalent). The `ns_filter` kernel emits a steady
+  drip of ND/RS/MLD traffic that any direction-agnostic capture will
+  occasionally see; that was the entire #13 flake.
 - Don't run `scripts/install.sh` without reading it — it does real
   systemd enable / iface modification.
 

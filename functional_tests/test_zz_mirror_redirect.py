@@ -153,11 +153,16 @@ def mirror_env(veth_pair):
 # ---------------------------------------------------------------------------
 
 def capture_on_mirror(bpf_filter, timeout=4, count=10):
-    """Capture packets on the mirror peer interface inside ns_ft_mirror."""
+    """Capture packets on the mirror peer interface inside ns_ft_mirror.
+
+    `-Q in` filters to ingress traffic so kernel ND/RS from the mirror
+    namespace doesn't mask "no mirror happened" assertions (mirror frames
+    arrive from the filter side as ingress here). See #13.
+    """
     cmd = (
         f"timeout {timeout} "
         f"ip netns exec {NS_MIRROR} "
-        f"tcpdump -i {VETH_MIR_PEER} -c {count} -nn -l --immediate-mode "
+        f"tcpdump -i {VETH_MIR_PEER} -Q in -c {count} -nn -l --immediate-mode "
         f"'{bpf_filter}' 2>/dev/null"
     )
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True,

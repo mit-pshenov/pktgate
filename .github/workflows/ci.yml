@@ -137,14 +137,12 @@ jobs:
 
   functional:
     runs-on: ubuntu-24.04
-    # All P0/P1 functional-cluster bugs surfaced by the CI shape fix are
-    # closed (L2 default_behavior, IPv6 ext-headers, IPv6 frag-behind-HBH).
-    # In isolation every test passes. A residual test-ordering flake affects
-    # 2 IPv6 tests in test_l3_ipv6.py — session-scoped pktgate fixture state
-    # leaks (suspected: rate_state_map / shared L2 maps across tests). Keep
-    # continue-on-error until the fixture is reworked to per-test or
-    # per-class scope. Tracked as a follow-up.
-    continue-on-error: true
+    # All P0/P1 functional-cluster bugs are closed. Previous IPv6 ordering
+    # flake (#13) was a tcpdump filter scoping bug, not a data-plane issue:
+    # broad filters like `ip6` matched kernel-emitted egress (IPv6 NS/RS/MLD,
+    # DAD) from ns_filter, intermittently failing drop-asserts. Capture
+    # helpers now pin direction to ingress (`tcpdump -Q in`), which gates
+    # out everything the kernel sends and leaves only what XDP let through.
     steps:
       - uses: actions/checkout@v5
 

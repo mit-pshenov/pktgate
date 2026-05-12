@@ -290,18 +290,9 @@ class PktgateProcess:
 def pktgate(veth_pair, base_config):
     """Start pktgate with base config — one daemon per test module.
 
-    Previously session-scoped, but a few IPv6 drop tests reliably failed in
-    multi-file runs (#13). Root cause was never fully pinned down — candidates
-    include scapy/libpcap RX-side caching on veth, kernel ARP/ND cache state,
-    or first-packet timing after generation_swap. Module scope reduces full-
-    suite failures from ~2 to 1 at the cost of ~1.5s per file (~20s extra).
-
-    Residual: within a single module run, `test_l3_ipv6.py` still flakes on
-    1-3 IPv6 drop tests depending on pytest ordering. Tests pass cleanly in
-    isolation. See _review/HANDOVER.md §functional-flake for the diagnostic
-    trail (pytest --collect-only order, isolation runs, partial bisect).
-    Tracked as a long-tail follow-up; functional CI stays continue-on-error
-    until resolved.
+    Module scope (rather than session) bounds the cost of a single bad
+    test contaminating downstream ones via shared BPF map state, without
+    paying restart cost per test.
 
     Tests that start their own PktgateProcess (e.g., test_zz_lifecycle.py)
     still work because they manage their own lifecycle.
@@ -361,11 +352,17 @@ def capture_on_filter(bpf_filter, timeout=3, count=10, iface=VETH_FILTER):
 
     Packets that pass XDP are visible to tcpdump inside the namespace.
     Packets dropped by XDP never reach here.
+
+    `-Q in` restricts the capture to ingress frames only, so kernel-emitted
+    egress traffic from ns_filter (IPv6 NS/RS/MLD, DAD, etc.) cannot be
+    mistaken for the device under test forwarding a packet. Without it,
+    a broad filter like `ip6` matches background ICMPv6 and intermittently
+    fails drop assertions (#13).
     """
     cmd = (
         f"timeout {timeout} "
         f"ip netns exec {NS_FILTER} "
-        f"tcpdump -i {iface} -c {count} -nn -l --immediate-mode "
+        f"tcpdump -i {iface} -Q in -c {count} -nn -l --immediate-mode "
         f"'{bpf_filter}' 2>/dev/null"
     )
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout + 5)
@@ -444,7 +441,7 @@ def capture_count(bpf_filter, timeout=3, iface=VETH_FILTER):
     cmd = (
         f"timeout {timeout} "
         f"ip netns exec {NS_FILTER} "
-        f"tcpdump -i {iface} -nn --immediate-mode "
+        f"tcpdump -i {iface} -Q in -nn --immediate-mode "
         f"'{bpf_filter}' 2>&1"
     )
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout + 5)
@@ -462,7 +459,7 @@ def capture_tos(bpf_filter, timeout=3, iface=VETH_FILTER):
     cmd = (
         f"timeout {timeout} "
         f"ip netns exec {NS_FILTER} "
-        f"tcpdump -i {iface} -v -nn --immediate-mode "
+        f"tcpdump -i {iface} -Q in -v -nn --immediate-mode "
         f"'{bpf_filter}' 2>/dev/null"
     )
     r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout + 5)
