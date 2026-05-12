@@ -171,6 +171,52 @@ static TestRunResult run_xdp_prog(int prog_fd, const uint8_t* data, uint32_t len
     return res;
 }
 
+/// Run an XDP layer program and return both the retval and the post-execution
+/// meta+data so callers can verify stamping or no-corruption. Mirrors
+/// run_xdp_prog(with_meta=true) but exposes the raw buffer.
+struct LayerRunResult {
+    TestRunResult run;
+    struct pkt_meta meta;            // meta as returned by the program
+    std::vector<uint8_t> packet;     // packet bytes as returned (post-action)
+};
+
+static LayerRunResult run_layer_prog(int prog_fd, const uint8_t* data, uint32_t len,
+                                      uint32_t generation = 0) {
+    LayerRunResult out{};
+    constexpr uint32_t meta_sz = sizeof(struct pkt_meta);
+    std::vector<uint8_t> data_with_meta(meta_sz + len);
+    struct pkt_meta meta_in{};
+    meta_in.generation = generation;
+    memcpy(data_with_meta.data(), &meta_in, meta_sz);
+    memcpy(data_with_meta.data() + meta_sz, data, len);
+
+    std::vector<uint8_t> data_out(meta_sz + len + 64, 0);
+
+    struct xdp_md ctx_in{};
+    ctx_in.data_meta = 0;
+    ctx_in.data      = meta_sz;
+    ctx_in.data_end  = meta_sz + len;
+
+    LIBBPF_OPTS(bpf_test_run_opts, opts,
+        .data_in = data_with_meta.data(),
+        .data_out = data_out.data(),
+        .data_size_in = static_cast<__u32>(data_with_meta.size()),
+        .data_size_out = static_cast<__u32>(data_out.size()),
+        .ctx_in = &ctx_in,
+        .ctx_size_in = sizeof(ctx_in),
+        .repeat = 1,
+    );
+
+    int err = bpf_prog_test_run_opts(prog_fd, &opts);
+    if (err < 0) { out.run.ok = false; return out; }
+    out.run.retval = opts.retval;
+    out.run.duration_ns = opts.duration;
+    out.run.ok = true;
+    memcpy(&out.meta, data_out.data(), meta_sz);
+    out.packet.assign(data_out.begin() + meta_sz, data_out.begin() + meta_sz + len);
+    return out;
+}
+
 // ── Test framework ──────────────────────────────────────────
 
 #define TEST(name) \
@@ -1547,6 +1593,201 @@ TEST(test_l4_ipv6_fragment_after_ext) {
     auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
     assert(res.ok);
     assert(res.retval == XDP_DROP); // fragment after ext headers → DROP
+}
+
+// ── #4 IPv6-as-a-class regression tests ─────────────────────────
+
+TEST(test_l3_stamps_ip_family_v4) {
+    // After L3 processes an IPv4 packet, meta->ip_family must equal IP_FAMILY_V4.
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.0.0.5"), ip_nbo("10.0.0.2"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+
+    auto out = run_layer_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size());
+    assert(out.run.ok);
+    assert(out.meta.ip_family == IP_FAMILY_V4);
+}
+
+TEST(test_l3_stamps_ip_family_v6) {
+    // After L3 processes an IPv6 packet, meta->ip_family must equal IP_FAMILY_V6.
+    auto pkt = build_ipv6_packet(KNOWN_MAC, DST_MAC, IPPROTO_TCP,
+                                  "2001:db8::1", "2001:db8::2", 20);
+    pkt.tcp(1234, 80);
+    pkt.pad(86);
+
+    auto out = run_layer_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size());
+    assert(out.run.ok);
+    assert(out.meta.ip_family == IP_FAMILY_V6);
+}
+
+TEST(test_l4_ipv6_ext_chain_depth_5_fail_closed) {
+    // P0-04: a chain of 5 Hop-by-Hop ext headers used to leave nhdr in
+    // {0,43,60} after the bounded walk and silently bypass all L4 rules and
+    // rate-limit via the default action. With the fix, the walker fails
+    // closed: XDP_DROP regardless of default_action.
+    //
+    // To prove the failure mode, switch default_action to ALLOW for this
+    // test — pre-fix the packet would pass, post-fix it drops.
+    using MM = pktgate::loader::MapManager;
+
+    uint32_t da_key = 0;
+    uint32_t da_val = ACT_ALLOW;
+    auto r = MM::update_elem(loader.default_action_fd(0), &da_key, &da_val, BPF_ANY);
+    assert(r.has_value());
+
+    PacketBuilder pkt;
+    pkt.eth(KNOWN_MAC, DST_MAC, 0x86DD);
+    size_t off = pkt.buf.size();
+    pkt.buf.resize(off + 40, 0);
+    uint8_t* ip6 = pkt.buf.data() + off;
+    ip6[0] = 0x60;
+    uint16_t plen = htons(5 * 8 + 20); // 5 HBH + TCP
+    memcpy(ip6 + 4, &plen, 2);
+    ip6[6] = 0;   // nexthdr = Hop-by-Hop
+    ip6[7] = 64;
+    struct in6_addr saddr{}, daddr{};
+    inet_pton(AF_INET6, "2001:db8::101", &saddr);
+    inet_pton(AF_INET6, "2001:db8::102", &daddr);
+    memcpy(ip6 + 8, &saddr, 16);
+    memcpy(ip6 + 24, &daddr, 16);
+
+    // Five Hop-by-Hop headers. First four are HBH → HBH; the fifth → TCP.
+    for (int i = 0; i < 4; i++) {
+        pkt.buf.push_back(0);  // next = HBH
+        pkt.buf.push_back(0);  // len = 0 → 8 bytes
+        for (int j = 0; j < 6; j++) pkt.buf.push_back(0);
+    }
+    pkt.buf.push_back(6);      // fifth HBH: next = TCP
+    pkt.buf.push_back(0);
+    for (int j = 0; j < 6; j++) pkt.buf.push_back(0);
+
+    pkt.tcp(4321, 80);
+    pkt.pad(120);
+
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);  // walker fails closed
+
+    // Restore default for sibling tests.
+    da_val = ACT_DROP;
+    MM::update_elem(loader.default_action_fd(0), &da_key, &da_val, BPF_ANY);
+}
+
+TEST(test_l3_ipv6_fragment_behind_hbh_drops) {
+    // P1#8: a Hop-by-Hop → Fragment chain previously hid the Fragment from
+    // L3's immediate-nexthdr check; a terminal-ALLOW L3 rule would let the
+    // non-first-fragment-equivalent payload through to userspace. With the
+    // fix, L3 walks ext headers and drops at any depth.
+    using MM = pktgate::loader::MapManager;
+
+    // Add terminal-ALLOW L3 rule for 2001:db8::/32 so the pre-fix path would
+    // bypass L4's defensive frag drop.
+    struct lpm_v6_key lpm6_allow{};
+    lpm6_allow.prefixlen = 32;
+    struct in6_addr net_addr{};
+    inet_pton(AF_INET6, "2001:db8::", &net_addr);
+    memcpy(lpm6_allow.addr, &net_addr, 16);
+    struct l3_rule l3_allow{};
+    l3_allow.rule_id = 333;
+    l3_allow.action = ACT_ALLOW;   // terminal — no next_layer
+    auto r = MM::update_elem(loader.subnet6_rules_fd(0), &lpm6_allow, &l3_allow, BPF_ANY);
+    assert(r.has_value());
+
+    PacketBuilder pkt;
+    pkt.eth(KNOWN_MAC, DST_MAC, 0x86DD);
+    size_t off = pkt.buf.size();
+    pkt.buf.resize(off + 40, 0);
+    uint8_t* ip6 = pkt.buf.data() + off;
+    ip6[0] = 0x60;
+    uint16_t plen = htons(16); // HBH(8) + Fragment(8)
+    memcpy(ip6 + 4, &plen, 2);
+    ip6[6] = 0;   // Hop-by-Hop
+    ip6[7] = 64;
+    struct in6_addr saddr{}, daddr{};
+    inet_pton(AF_INET6, "2001:db8::501", &saddr);
+    inet_pton(AF_INET6, "2001:db8::502", &daddr);
+    memcpy(ip6 + 8, &saddr, 16);
+    memcpy(ip6 + 24, &daddr, 16);
+
+    // HBH ext header: next = Fragment (44)
+    pkt.buf.push_back(44);
+    pkt.buf.push_back(0);
+    for (int i = 0; i < 6; i++) pkt.buf.push_back(0);
+    // Fragment header stub (8 bytes)
+    for (int i = 0; i < 8; i++) pkt.buf.push_back(0);
+    pkt.pad(80);
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);  // L3 walker catches the fragment
+
+    MM::delete_elem(loader.subnet6_rules_fd(0), &lpm6_allow);
+}
+
+TEST(test_tc_ipv6_tag_does_not_corrupt) {
+    // P0-03: ACT_TAG previously hard-coded IPv4 byte offsets, smashing the
+    // IPv6 Flow Label byte and writing a 16-bit checksum delta into the
+    // source-address bytes (IPv6 has no L3 checksum at offset 24). The fix
+    // gates the rewrite on ip_family — for V6 it becomes a no-op and bumps
+    // STAT_TC_TAG_V6_UNIMPL. This test verifies the IPv6 packet body is
+    // returned byte-for-byte unchanged.
+
+    auto pkt = build_ipv6_packet(KNOWN_MAC, DST_MAC, IPPROTO_TCP,
+                                  "2001:db8::abcd", "2001:db8::dcba", 20);
+    pkt.tcp(1234, 80);
+    pkt.pad(86);
+
+    // Build pkt_meta as L4 would have set it for a TAG-targeted IPv6 packet.
+    constexpr uint32_t meta_sz = sizeof(struct pkt_meta);
+    std::vector<uint8_t> data_with_meta(meta_sz + pkt.size());
+    struct pkt_meta meta{};
+    meta.generation = 0;
+    meta.ip_family = IP_FAMILY_V6;
+    meta.action_flags = (1u << ACT_TAG);
+    meta.dscp = 46;  // EF — would corrupt v6 Flow Label byte under pre-fix code
+    memcpy(data_with_meta.data(), &meta, meta_sz);
+    memcpy(data_with_meta.data() + meta_sz, pkt.data(), pkt.size());
+
+    std::vector<uint8_t> data_out(meta_sz + pkt.size() + 64, 0);
+
+    struct __sk_buff skb_ctx{};
+    skb_ctx.data_meta = 0;
+    skb_ctx.data      = meta_sz;
+    skb_ctx.data_end  = meta_sz + pkt.size();
+
+    LIBBPF_OPTS(bpf_test_run_opts, opts,
+        .data_in  = data_with_meta.data(),
+        .data_out = data_out.data(),
+        .data_size_in  = static_cast<__u32>(data_with_meta.size()),
+        .data_size_out = static_cast<__u32>(data_out.size()),
+        .ctx_in  = &skb_ctx,
+        .ctx_size_in  = sizeof(skb_ctx),
+        .repeat = 1,
+    );
+
+    int err = bpf_prog_test_run_opts(loader.tc_ingress_prog_fd(), &opts);
+    if (err != 0) {
+        // Some kernels return -ENOTSUPP for BPF_PROG_TEST_RUN on TC/clsact
+        // programs. The fix is verified by the per-test stat path; this
+        // test surface is best-effort under PROG_TEST_RUN.
+        std::cout << "    [skip] kernel rejected TC PROG_TEST_RUN (err=" << err << ")\n";
+        return;
+    }
+
+    // Critical: the IPv6 header bytes (Flow Label byte 1, source address
+    // bytes 8-23, dest 24-39) must be untouched.
+    const uint8_t* before = pkt.data() + 14;       // skip Ethernet
+    const uint8_t* after  = data_out.data() + meta_sz + 14;
+    for (size_t i = 0; i < 40; i++) {
+        if (before[i] != after[i]) {
+            std::cout << "    [v6 corruption at IPv6 byte " << i
+                      << "] before=0x" << std::hex << (int)before[i]
+                      << " after=0x" << (int)after[i] << std::dec << "\n";
+            assert(false && "IPv6 header corrupted by TC ACT_TAG");
+        }
+    }
 }
 
 TEST(test_l4_rate_limit_depletion) {

@@ -142,17 +142,24 @@ int layer4_prog(struct xdp_md *ctx)
         }
 
         /*
-         * Skip known IPv6 extension headers to find the transport
-         * header. Bounded loop (max 4) for BPF verifier safety.
+         * Skip known IPv6 extension headers to find the transport header.
+         * Bounded loop (max 4) for BPF verifier safety.
          * Skippable: Hop-by-Hop (0), Routing (43), Destination (60).
-         * Fragment (44) should have been dropped in L3; stop here
-         * defensively. Stop on TCP (6), UDP (17), or unknown.
+         * Fragment (44) is dropped from inside the loop so it's caught at
+         * any depth, not only at position 0 (closes the L3-defensive gap).
+         * Bound exhausted with nhdr still an ext-header value → fail-closed
+         * (STAT_DROP_L4_V6_EXT_DEPTH); the old code fell through to the
+         * non-TCP/UDP arm and silently bypassed every L4 rule + rate-limit.
          */
         unsigned char *cursor = (unsigned char *)(ip6h + 1);
         __u8 nhdr = ip6h->nexthdr;
 
         #pragma unroll
         for (int i = 0; i < 4; i++) {
+            if (nhdr == 44) {
+                STAT_INC(STAT_DROP_L4_V6_FRAGMENT);
+                return XDP_DROP;
+            }
             if (nhdr != 0 && nhdr != 43 && nhdr != 60)
                 break;
             /* Extension header: byte 0 = next header, byte 1 = length in 8-octet units */
@@ -171,9 +178,9 @@ int layer4_prog(struct xdp_md *ctx)
             nhdr = next;
         }
 
-        /* Fragment header (44) — L3 should have dropped, but be defensive */
-        if (nhdr == 44) {
-            STAT_INC(STAT_DROP_L4_V6_FRAGMENT);
+        if (nhdr == 0 || nhdr == 43 || nhdr == 60) {
+            STAT_INC(STAT_DROP_L4_V6_EXT_DEPTH);
+            BPF_DBG("L4v6: ext-header chain >4, fail-closed drop");
             return XDP_DROP;
         }
 

@@ -186,18 +186,49 @@ int layer3_prog(struct xdp_md *ctx)
 
     /* ── IPv6 path ─────────────────────────────────────────── */
     if (eth_proto == bpf_htons(0x86DD)) { /* ETH_P_IPV6 */
+        meta->ip_family = IP_FAMILY_V6;
+
         struct ipv6hdr *ip6h = (struct ipv6hdr *)(eth + 1);
         if ((unsigned char *)(ip6h + 1) > data_end) {
             STAT_INC(STAT_DROP_L3_BOUNDS);
             return XDP_DROP;
         }
 
-        /* Drop IPv6 fragments — nexthdr 44 is the Fragment Header.
-         * Fragmented IPv6 packets lack reliable L4 headers beyond
-         * the first fragment, same rationale as IPv4 frag_off check. */
-        if (ip6h->nexthdr == 44) {
-            STAT_INC(STAT_DROP_L3_V6_FRAGMENT);
-            BPF_DBG("L3v6: fragment header detected, dropping");
+        /*
+         * Walk up to 4 extension headers looking for Fragment (44). Closes
+         * P1#8: previously L3 only checked the immediate nexthdr, so a
+         * Hop-by-Hop → Fragment chain hid the Fragment from L3 and let
+         * non-first fragments reach L4 (or a terminal-ALLOW L3 rule).
+         * Fail-closed on chains too deep — drops with STAT_DROP_L3_V6_EXT_DEPTH.
+         */
+        unsigned char *cursor = (unsigned char *)(ip6h + 1);
+        __u8 nhdr = ip6h->nexthdr;
+        #pragma unroll
+        for (int i = 0; i < 4; i++) {
+            if (nhdr == 44) {
+                STAT_INC(STAT_DROP_L3_V6_FRAGMENT);
+                BPF_DBG("L3v6: fragment header detected at depth %d, dropping", i);
+                return XDP_DROP;
+            }
+            if (nhdr != 0 && nhdr != 43 && nhdr != 60)
+                break;
+            if (cursor + 2 > data_end) {
+                STAT_INC(STAT_DROP_L3_BOUNDS);
+                return XDP_DROP;
+            }
+            __u8 next = *cursor;
+            __u8 hlen = *(cursor + 1);
+            __u32 ext_len = ((__u32)hlen + 1) * 8;
+            cursor += ext_len;
+            if (cursor > data_end) {
+                STAT_INC(STAT_DROP_L3_BOUNDS);
+                return XDP_DROP;
+            }
+            nhdr = next;
+        }
+        if (nhdr == 0 || nhdr == 43 || nhdr == 60) {
+            STAT_INC(STAT_DROP_L3_V6_EXT_DEPTH);
+            BPF_DBG("L3v6: ext-header chain >4, fail-closed drop");
             return XDP_DROP;
         }
 
@@ -239,6 +270,7 @@ int layer3_prog(struct xdp_md *ctx)
         STAT_INC(STAT_DROP_L3_NOT_IPV4);
         return XDP_DROP;
     }
+    meta->ip_family = IP_FAMILY_V4;
 
     struct iphdr *iph = (struct iphdr *)(eth + 1);
     if ((unsigned char *)(iph + 1) > data_end) {

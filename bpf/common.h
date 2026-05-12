@@ -169,6 +169,13 @@ struct l4_rule {
     __u64 rate_bps;        /* for ACT_RATE_LIMIT */
 };
 
+/* ── IP family tag stamped by L3 entry ─────────────────────── */
+
+/* Numeric self-doc — 4 / 6 read clearly in stat dumps and trace_pipe.
+ * Diverges from POSIX AF_INET (10) / AF_INET6 (28) on purpose. */
+#define IP_FAMILY_V4 4
+#define IP_FAMILY_V6 6
+
 /* ── Per-packet metadata (passed between tail calls via per-CPU map) ── */
 
 struct pkt_meta {
@@ -178,7 +185,8 @@ struct pkt_meta {
     __u32 mirror_ifindex;   /* target ifindex for mirror */
     __u8  dscp;             /* DSCP value for tagging */
     __u8  cos;              /* CoS value for tagging */
-    __u8  _pad[2];
+    __u8  ip_family;        /* IP_FAMILY_V4 or IP_FAMILY_V6, stamped by L3 */
+    __u8  _pad;
 };
 
 /* ── Statistics counters (percpu) ──────────────────────────── */
@@ -241,8 +249,11 @@ enum stat_key {
     STAT_DROP_L3_V6_DEFAULT  = 34,   /* IPv6 default action = DROP */
     STAT_DROP_L3_V6_FRAGMENT = 35,   /* IPv6 fragment header detected, dropped */
     STAT_DROP_L4_V6_FRAGMENT = 36,   /* IPv6 fragment after ext headers in L4 */
+    STAT_DROP_L4_V6_EXT_DEPTH = 40,  /* L4 ext-header walker exhausted bound — fail closed */
+    STAT_DROP_L3_V6_EXT_DEPTH = 41,  /* L3 ext-header walker exhausted bound — fail closed */
+    STAT_TC_TAG_V6_UNIMPL    = 42,   /* TC ACT_TAG on IPv6 — Traffic Class rewrite TBD */
 
-    STAT__MAX                = 40,
+    STAT__MAX                = 43,
 };
 
 #define MAX_STATS STAT__MAX

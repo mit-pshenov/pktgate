@@ -64,6 +64,7 @@ int tc_ingress_prog(struct __sk_buff *skb)
      */
     __u32 mirror_ifindex = meta->mirror_ifindex;
     __u8  dscp           = meta->dscp;
+    __u8  ip_family      = meta->ip_family;
 
     /* ── Mirror: clone packet to mirror_ifindex ─────────────── */
     if (flags & (1 << ACT_MIRROR)) {
@@ -81,27 +82,41 @@ int tc_ingress_prog(struct __sk_buff *skb)
 
     /* ── Tag: rewrite DSCP in IPv4 TOS field ────────────────── */
     if (flags & (1 << ACT_TAG)) {
-        /* ETH header = 14 bytes, TOS = byte 1 of IP header → offset 15 */
-        __u8 old_tos;
-        if (bpf_skb_load_bytes(skb, 14 + 1, &old_tos, 1) == 0) {
-            /* DSCP occupies bits 7:2, ECN occupies bits 1:0 */
-            __u8 new_tos = (dscp << 2) | (old_tos & 0x03);
-            if (new_tos != old_tos) {
-                bpf_skb_store_bytes(skb, 14 + 1, &new_tos, 1, 0);
-                /*
-                 * Fix up IP header checksum after TOS modification.
-                 * bpf_skb_store_bytes with BPF_F_RECOMPUTE_CSUM only updates
-                 * skb->csum (L4), NOT the IP header checksum field itself.
-                 * Use bpf_l3_csum_replace to do an incremental L3 checksum update.
-                 * IP checksum is at offset 10 in the IP header (= byte 24 from frame start).
-                 */
-                bpf_l3_csum_replace(skb, 14 + 10,
-                                    bpf_htons((__u16)old_tos),
-                                    bpf_htons((__u16)new_tos), 2);
-                STAT_INC(STAT_TC_TAG);
-                BPF_DBG("TC: DSCP rewrite old_tos=0x%x new_tos=0x%x", old_tos, new_tos);
+        if (ip_family == IP_FAMILY_V6) {
+            /*
+             * IPv6 Traffic Class lives in a different place and has no L3
+             * checksum to fix up. The previous code hard-coded IPv4 offsets,
+             * which corrupted the v6 Flow Label byte AND smashed the v6
+             * source address (bpf_l3_csum_replace writing into bytes 2-3 of
+             * the v6 saddr — IPv6 has no header checksum there). Closing
+             * P0-03 by no-op'ing v6 TAG until a proper rewrite helper lands.
+             */
+            STAT_INC(STAT_TC_TAG_V6_UNIMPL);
+            BPF_DBG("TC: ACT_TAG on IPv6 — TBD, skipping");
+        } else if (ip_family == IP_FAMILY_V4) {
+            /* ETH header = 14 bytes, TOS = byte 1 of IP header → offset 15 */
+            __u8 old_tos;
+            if (bpf_skb_load_bytes(skb, 14 + 1, &old_tos, 1) == 0) {
+                /* DSCP occupies bits 7:2, ECN occupies bits 1:0 */
+                __u8 new_tos = (dscp << 2) | (old_tos & 0x03);
+                if (new_tos != old_tos) {
+                    bpf_skb_store_bytes(skb, 14 + 1, &new_tos, 1, 0);
+                    /*
+                     * Fix up IP header checksum after TOS modification.
+                     * bpf_skb_store_bytes with BPF_F_RECOMPUTE_CSUM only updates
+                     * skb->csum (L4), NOT the IP header checksum field itself.
+                     * Use bpf_l3_csum_replace to do an incremental L3 checksum update.
+                     * IP checksum is at offset 10 in the IP header (= byte 24 from frame start).
+                     */
+                    bpf_l3_csum_replace(skb, 14 + 10,
+                                        bpf_htons((__u16)old_tos),
+                                        bpf_htons((__u16)new_tos), 2);
+                    STAT_INC(STAT_TC_TAG);
+                    BPF_DBG("TC: DSCP rewrite old_tos=0x%x new_tos=0x%x", old_tos, new_tos);
+                }
             }
         }
+        /* ip_family == 0: legacy path with no L3 entry stamp — skip silently. */
     }
 
     return TC_ACT_OK;

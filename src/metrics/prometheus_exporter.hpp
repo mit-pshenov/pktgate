@@ -133,6 +133,14 @@ static constexpr MetricDesc kMetrics[] = {
      nullptr, "counter"},
     {STAT_DROP_L2_REDIRECT_FAIL,  "pktgate_drop_total{layer=\"l2\",reason=\"redirect_fail\"}",
      nullptr, "counter"},
+
+    // ── IPv6 ext-header hardening ──
+    {STAT_DROP_L4_V6_EXT_DEPTH,   "pktgate_drop_total{layer=\"l4\",reason=\"v6_ext_depth\"}",
+     nullptr, "counter"},
+    {STAT_DROP_L3_V6_EXT_DEPTH,   "pktgate_drop_total{layer=\"l3v6\",reason=\"ext_depth\"}",
+     nullptr, "counter"},
+    {STAT_TC_TAG_V6_UNIMPL,       "pktgate_tc_tag_v6_unimpl_total",
+     nullptr, "counter"},
 };
 
 static_assert(sizeof(kMetrics) / sizeof(kMetrics[0]) == STAT__MAX,
