@@ -286,13 +286,25 @@ class PktgateProcess:
             self._tmpdir = None
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def pktgate(veth_pair, base_config):
-    """Start pktgate with base config. Shared across entire test session.
+    """Start pktgate with base config — one daemon per test module.
 
-    WARNING: tests that start their own PktgateProcess (e.g., test_default.py)
-    will detach XDP from the interface. They must restart pktgate afterwards
-    or run after all tests that depend on this fixture.
+    Previously session-scoped, but a few IPv6 drop tests reliably failed in
+    multi-file runs (#13). Root cause was never fully pinned down — candidates
+    include scapy/libpcap RX-side caching on veth, kernel ARP/ND cache state,
+    or first-packet timing after generation_swap. Module scope reduces full-
+    suite failures from ~2 to 1 at the cost of ~1.5s per file (~20s extra).
+
+    Residual: within a single module run, `test_l3_ipv6.py` still flakes on
+    1-3 IPv6 drop tests depending on pytest ordering. Tests pass cleanly in
+    isolation. See _review/HANDOVER.md §functional-flake for the diagnostic
+    trail (pytest --collect-only order, isolation runs, partial bisect).
+    Tracked as a long-tail follow-up; functional CI stays continue-on-error
+    until resolved.
+
+    Tests that start their own PktgateProcess (e.g., test_zz_lifecycle.py)
+    still work because they manage their own lifecycle.
     """
     gate = PktgateProcess()
     gate.start(base_config)
