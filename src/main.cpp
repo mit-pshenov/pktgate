@@ -12,7 +12,9 @@
 #include <memory>
 #include <poll.h>
 #include <sys/inotify.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <libgen.h>
 #include <cstring>
@@ -24,6 +26,31 @@ static volatile sig_atomic_t g_reload = 0;
 static void sig_handler(int) { g_running = 0; }
 static void sigusr1_handler(int) { g_dump_stats = 1; }
 static void sighup_handler(int) { g_reload = 1; }
+
+/// Send a single message to $NOTIFY_SOCKET (systemd's sd_notify protocol).
+/// No-op when not run under systemd. Avoids the libsystemd dependency —
+/// the wire protocol is just a UNIX datagram of "KEY=value\n..." text.
+static void sd_notify_str(const char* msg) {
+    const char* path = std::getenv("NOTIFY_SOCKET");
+    if (!path || !*path) return;
+
+    int sock = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (sock < 0) return;
+
+    struct sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    /* Abstract namespace paths start with '@' in $NOTIFY_SOCKET → leading NUL. */
+    if (path[0] == '@') {
+        addr.sun_path[0] = '\0';
+        std::strncpy(addr.sun_path + 1, path + 1, sizeof(addr.sun_path) - 2);
+    } else {
+        std::strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    }
+
+    (void)sendto(sock, msg, std::strlen(msg), MSG_NOSIGNAL,
+                 reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+    close(sock);
+}
 
 /// Attempt to reload config and deploy to shadow generation.
 /// On failure, active generation is untouched — traffic keeps flowing.
@@ -230,6 +257,10 @@ int main(int argc, char* argv[]) {
     LOG_INF("Filter active on %s. SIGHUP=reload, SIGUSR1=stats, Ctrl+C=stop.",
             cfg.interface.c_str());
 
+    // Tell systemd we're ready and start the watchdog ping cycle.
+    // No-op when not run under systemd (NOTIFY_SOCKET unset).
+    sd_notify_str("READY=1\nSTATUS=filter active");
+
     // Main event loop — poll on inotify fd (or just signal-driven if inotify unavailable)
     struct pollfd pfd = {};
     if (inotify_fd >= 0) {
@@ -238,6 +269,10 @@ int main(int argc, char* argv[]) {
     }
 
     while (g_running) {
+        // Watchdog ping. Reaches systemd only when run under .service with
+        // WatchdogSec= set; otherwise it's a cheap no-op (env var unset).
+        sd_notify_str("WATCHDOG=1");
+
         // poll() with timeout — interruptible by signals
         int nfds = (inotify_fd >= 0) ? 1 : 0;
         int ret = poll(nfds ? &pfd : nullptr, nfds, 1000 /* 1s timeout */);
@@ -269,6 +304,9 @@ int main(int argc, char* argv[]) {
             stats_reader.print();
         }
     }
+
+    // Tell systemd we're stopping so it doesn't wait for the watchdog timeout.
+    sd_notify_str("STOPPING=1\nSTATUS=shutting down");
 
     // Print final stats on shutdown
     LOG_INF("Shutting down...");

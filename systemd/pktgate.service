@@ -5,7 +5,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# Type=notify enables READY=1 ack and the WatchdogSec= ping cycle. pktgate_ctl
+# writes to $NOTIFY_SOCKET directly (no libsystemd dep).
+Type=notify
+NotifyAccess=main
 EnvironmentFile=-/etc/pktgate/pktgate.conf
 ExecStart=/bin/sh -c '/usr/local/bin/pktgate_ctl --json ${PKTGATE_METRICS_PORT:+--metrics-port $PKTGATE_METRICS_PORT} ${PKTGATE_EXTRA_ARGS} ${PKTGATE_CONFIG:-/etc/pktgate/config.json}'
 ExecReload=/bin/kill -HUP $MAINPID
@@ -13,6 +16,12 @@ ExecReload=/bin/kill -HUP $MAINPID
 # Graceful shutdown — prints final stats before exit
 KillSignal=SIGTERM
 TimeoutStopSec=5
+
+# Watchdog: kill+restart if the 1s main loop misses 30 pings in a row.
+# Crash with XDP loaded → kernel keeps the last good program attached and
+# traffic keeps flowing; stop → loader.detach() unhooks XDP → traffic passes
+# unfiltered. Document this in ARCHITECTURE.md §Fail-safe.
+WatchdogSec=30
 
 # Restart policy
 Restart=on-failure

@@ -888,7 +888,27 @@ sudo scripts/uninstall.sh --purge   # удалить всё
 - `/etc/systemd/system/pktgate.service` — systemd unit
 
 Security hardening в unit: `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,
-минимальный `CapabilityBoundingSet` (CAP_BPF, CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_PERFMON).
+`NoNewPrivileges=yes`, `SystemCallFilter=@system-service @network-io @file-system`,
+минимальный `CapabilityBoundingSet` (CAP_BPF, CAP_NET_ADMIN, CAP_PERFMON).
+
+### Fail-safe contract
+
+`Type=notify` + `WatchdogSec=30`. `pktgate_ctl` пишет `READY=1` после успешного
+attach и пингует `WATCHDOG=1` раз в секунду из главного цикла. Если 30 секунд
+ping'а нет — systemd убивает и рестартит. `Restart=on-failure` + `RestartSec=3`.
+
+Что происходит при разных видах сбоя:
+- **Crash (SIGSEGV/abort)** — ядро держит последнюю загруженную XDP-программу
+  на интерфейсе; трафик продолжает фильтроваться по замороженной generation
+  пока systemd не запустит pktgate_ctl снова (≤ 3 с по `RestartSec`).
+- **Stop (SIGTERM / `systemctl stop`)** — `loader.detach()` отвязывает XDP +
+  TC, трафик идёт **нефильтрованным**. Это явный fail-open для plannned
+  shutdown'ов. На время рестарта (≤ 3 с) при `systemctl restart` тоже.
+- **BPF load failure при старте** — pktgate_ctl выходит с ошибкой, XDP не
+  привязан вообще, трафик нефильтрованный, systemd рестартит по `on-failure`.
+- **Watchdog miss (зависание в main loop)** — systemd киляет, перезапускает.
+  Текущая загруженная BPF-программа остаётся на интерфейсе до момента
+  `detach()` нового процесса (т.е. практически не видна).
 
 ### RPM packaging
 
