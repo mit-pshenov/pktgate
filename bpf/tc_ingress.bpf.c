@@ -63,13 +63,20 @@ int tc_ingress_prog(struct __sk_buff *skb)
 
     struct pkt_meta *meta = data_meta;
     if ((void *)(meta + 1) > data) {
-        /* No XDP metadata present — nothing to do */
-        STAT_COUNT(STAT_TC_NOOP, pkt_len);
+        /*
+         * No XDP metadata present — this packet didn't traverse our XDP
+         * program (or XDP didn't reserve data_meta). Distinct from the
+         * "XDP ran, no deferred action" case below. Split for P1#13 so
+         * operators can tell a configuration problem (XDP not attached)
+         * from normal traffic with nothing for TC to rewrite.
+         */
+        STAT_COUNT(STAT_TC_NO_META, pkt_len);
         return TC_ACT_OK;
     }
 
     __u32 flags = meta->action_flags;
     if (flags == 0) {
+        /* XDP did run; no deferred TC action (no mirror, no tag). */
         STAT_COUNT(STAT_TC_NOOP, pkt_len);
         return TC_ACT_OK;
     }
@@ -96,6 +103,14 @@ int tc_ingress_prog(struct __sk_buff *skb)
                 STAT_COUNT(STAT_TC_MIRROR_FAIL, pkt_len);
                 BPF_DBG("TC: mirror to ifindex=%d FAILED ret=%ld", mirror_ifindex, ret);
             }
+        } else {
+            /*
+             * Rule requested mirror but ifindex is zero — interface name
+             * didn't resolve at compile time, or rule was loaded before
+             * the target iface existed. Previously this was silent (P1#14).
+             */
+            STAT_COUNT(STAT_TC_MIRROR_NO_IFINDEX, pkt_len);
+            BPF_DBG("TC: mirror requested but ifindex=0, skipped");
         }
     }
 

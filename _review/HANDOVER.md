@@ -4,12 +4,10 @@ Last touched: 2026-05-12. Project on pause; main is shippable. Start here.
 
 ## 30-second status
 
-10/10 P0, 10/22 P1, 1 NEW P0-class, LICENSE — all landed on main between
-`7d265e6` and the rate-limit pair commit. Unit + integration + BPF data-plane
-tests are green in CI. Functional tests are 104/104 green over three
-back-to-back full-suite runs after the #13 capture-direction fix
-(see §functional-flake). The `continue-on-error` shield has been removed
-from the functional CI job.
+10/10 P0, 15/22 P1, 1 NEW P0-class, LICENSE — all landed on main. Unit +
+integration + BPF data-plane tests are green in CI. Functional tests are
+104/104 green (full suite confirmed after every fix in this round). The
+`continue-on-error` shield has been removed from the functional CI job.
 
 The `_review/99_REPORT.md` is the canonical map. Every closed finding
 has an inline `[RESOLVED 2026-05-12]` marker; one is `[PARTIAL]` — see
@@ -57,19 +55,15 @@ re-run with `CC=clang-19 CXX=clang++-19` (or whichever you have).
 Tracked entries in `99_REPORT.md` that DIDN'T get `[RESOLVED]`:
 
 **P1 (priority):**
-- **#1 data_meta XDP→TC contract self-test** — add `BPF_PROG_TEST_RUN` sentinel
-  check in `attach_tc()`.
 - **#5 generation rollback is broken/dead** — only fires under test mocks. Either
   pre-populate `prog_array_0`/`default_action_0` or delete `rollback()`.
 - **#10 no compile-time enforcement of per-map size limits** — `-E2BIG` at
   deploy time leaves shadow partially populated.
-- **#12 no file-size guard on config-file load** — OOM via huge JSON.
-- **#13 `STAT_TC_NOOP` conflates two states** — split into NO_META + NOOP.
-- **#14 `ACT_MIRROR` with `mirror_ifindex == 0` silently skipped** — no counter.
-- **#15 stale TC ingress after SIGKILL** — `bpf_tc_attach` lacks
-  REPLACE-equivalent. XDP self-heals, TC needs manual `tc qdisc del`.
 - **#20 full-packet mirror has no truncation / PII boundary** — Gi-link carries
-  subscriber HTTP, IMSI/IMEI in VoLTE SIP, unencrypted DNS.
+  subscriber HTTP, IMSI/IMEI in VoLTE SIP, unencrypted DNS. **Architectural
+  fix needed** (AF_XDP socket or userspace mirror daemon) — `bpf_clone_redirect`
+  in TC has no native truncation and `bpf_skb_change_tail` mutates the
+  original packet. Defer to a dedicated design round.
 - **#21 no per-rule observability** — Prometheus exposes global counters only.
   Per-rule pps/bps still aggregated by (layer, reason). The customer brief
   asked for per-rule.

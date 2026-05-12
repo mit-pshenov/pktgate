@@ -1875,6 +1875,64 @@ TEST(test_l4_rate_limit_depletion) {
     MM::update_elem(loader.l4_rules_fd(0), &l4_tcp443, &restore, BPF_ANY);
 }
 
+TEST(test_xdp_to_tc_data_meta_contract) {
+    /*
+     * P1#1: entry XDP program must call bpf_xdp_adjust_meta() to grow the
+     * data_meta area enough for `struct pkt_meta`. Every downstream stage —
+     * L2/L3/L4 BPF and the TC ingress program — reads metadata out of that
+     * area. If a refactor accidentally removes the adjust_meta call, TC
+     * sees no metadata and STAT_TC_NO_META climbs while every action_flag
+     * goes silently dark.
+     *
+     * Probe by running entry_prog through PROG_TEST_RUN with a minimal
+     * Ethernet sentinel and checking the program ran to a verdict (i.e.,
+     * the verifier accepted it and the kernel produced a retval). We
+     * intentionally use `bpftool prog show` semantics via test_run rather
+     * than parsing BTF, so this test exercises the runtime contract.
+     */
+    int entry_fd = loader.entry_prog_fd();
+    assert(entry_fd >= 0);
+
+    // Sentinel: a 64-byte zero-padded Ethernet frame. Doesn't have to be
+    // routable — we only care that entry_prog can execute and produce a
+    // retval. STAT_DROP_NO_META being incremented (after the test_run)
+    // would be the smoking gun for a broken contract.
+    std::vector<uint8_t> sentinel(64, 0);
+
+    LIBBPF_OPTS(bpf_test_run_opts, opts,
+        .data_in       = sentinel.data(),
+        .data_size_in  = static_cast<__u32>(sentinel.size()),
+        .repeat        = 1,
+    );
+
+    // Snapshot STAT_DROP_NO_META before the run.
+    uint64_t before = 0;
+    {
+        std::vector<uint64_t> percpu(libbpf_num_possible_cpus());
+        uint32_t k = STAT_DROP_NO_META;
+        if (bpf_map_lookup_elem(loader.stats_map_fd(), &k, percpu.data()) == 0) {
+            for (auto v : percpu) before += v;
+        }
+    }
+
+    int rc = bpf_prog_test_run_opts(entry_fd, &opts);
+    assert(rc == 0 && "entry_prog test_run syscall failed");
+
+    uint64_t after = 0;
+    {
+        std::vector<uint64_t> percpu(libbpf_num_possible_cpus());
+        uint32_t k = STAT_DROP_NO_META;
+        if (bpf_map_lookup_elem(loader.stats_map_fd(), &k, percpu.data()) == 0) {
+            for (auto v : percpu) after += v;
+        }
+    }
+
+    // If bpf_xdp_adjust_meta is broken, STAT_DROP_NO_META will have
+    // incremented on the test packet. The contract is: that counter
+    // stays exactly where it was.
+    assert(after == before && "entry_prog hit STAT_DROP_NO_META — data_meta contract broken");
+}
+
 TEST(test_prune_u32_keys_not_in) {
     // Direct test of the helper that backs P1#7's rate_state_map GC:
     // insert a known set of u32 keys, prune everything not in the keep set,

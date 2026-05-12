@@ -141,6 +141,18 @@ static constexpr MetricDesc kMetrics[] = {
      nullptr, "counter"},
     {STAT_TC_TAG_V6_UNIMPL,       "pktgate_tc_tag_v6_unimpl_total",
      nullptr, "counter"},
+
+    // ── TC observability split (P1#13/P1#14) ──
+    // STAT_TC_NO_META: packet entered TC without XDP data_meta — either XDP
+    // is detached or traffic bypassed it. Operator-visible signal of a broken
+    // attach, distinct from STAT_TC_NOOP (XDP ran, nothing for TC to do).
+    {STAT_TC_NO_META,             "pktgate_tc_total{action=\"no_meta\"}",
+     nullptr, "counter"},
+    // STAT_TC_MIRROR_NO_IFINDEX: rule asked for mirror but mirror_ifindex==0,
+    // so clone_redirect would have been skipped silently. Surfacing this lets
+    // operators notice dead mirror configs.
+    {STAT_TC_MIRROR_NO_IFINDEX,   "pktgate_tc_total{action=\"mirror_no_ifindex\"}",
+     nullptr, "counter"},
 };
 
 static_assert(sizeof(kMetrics) / sizeof(kMetrics[0]) == STAT__MAX,

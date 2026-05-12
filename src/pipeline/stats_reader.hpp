@@ -82,8 +82,10 @@ public:
             "  --- TC Ingress ---\n"
             "  tc/mirror:            %llu\n"
             "  tc/mirror_fail:       %llu\n"
+            "  tc/mirror_no_iface:   %llu\n"
             "  tc/tag:               %llu\n"
             "  tc/noop:              %llu\n"
+            "  tc/no_meta:           %llu\n"
             "\n"
             "  --- IPv6 ---\n"
             "  l3v6/pass:            %llu\n"
@@ -124,8 +126,10 @@ public:
             (unsigned long long)totals[STAT_RATE_LIMIT_PASS],
             (unsigned long long)totals[STAT_TC_MIRROR],
             (unsigned long long)totals[STAT_TC_MIRROR_FAIL],
+            (unsigned long long)totals[STAT_TC_MIRROR_NO_IFINDEX],
             (unsigned long long)totals[STAT_TC_TAG],
             (unsigned long long)totals[STAT_TC_NOOP],
+            (unsigned long long)totals[STAT_TC_NO_META],
             (unsigned long long)totals[STAT_PASS_L3_V6],
             (unsigned long long)totals[STAT_DROP_L3_V6_RULE],
             (unsigned long long)totals[STAT_DROP_L3_V6_DEFAULT],

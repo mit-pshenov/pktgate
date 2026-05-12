@@ -216,9 +216,16 @@ std::expected<void, std::string> BpfLoader::attach_tc(const std::string& interfa
         return std::unexpected("TC: failed to create clsact qdisc: " +
                                std::string(std::strerror(-err)));
 
-    // Attach TC program
+    /*
+     * Attach with BPF_TC_F_REPLACE so a stale program left over from a
+     * SIGKILL'd previous run is overwritten in place, rather than failing
+     * with -EEXIST and leaving the operator to manually `tc qdisc del`.
+     * XDP self-heals because bpf_xdp_attach replaces by default; TC needs
+     * this flag to match (P1#15).
+     */
     LIBBPF_OPTS(bpf_tc_opts, tc_opts,
         .prog_fd = prog_fd,
+        .flags   = BPF_TC_F_REPLACE,
     );
     err = bpf_tc_attach(&hook, &tc_opts);
     if (err)

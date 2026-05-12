@@ -1,10 +1,18 @@
 #include "config/config_parser.hpp"
 #include <nlohmann/json.hpp>
+#include <filesystem>
 #include <fstream>
 
 namespace pktgate::config {
 
 using json = nlohmann::json;
+
+// Maximum bytes accepted from a config file. Sized for a generous worst-case
+// real config (thousands of rules, all CIDR / MAC objects expanded) while
+// staying small enough that an accidental or malicious 100 MB JSON never
+// reaches the parser. Closes P1#12 (OOM via huge config). 16 MiB is two
+// orders of magnitude above any real pktgate config seen in the field.
+static constexpr std::uintmax_t kMaxConfigBytes = 16ULL * 1024 * 1024;
 
 static Rule parse_rule(const json& j) {
     Rule r;
@@ -139,6 +147,19 @@ static std::expected<Config, std::string> parse_json(const json& j) {
 }
 
 std::expected<Config, std::string> parse_config(const std::string& json_path) {
+    // File-size guard before reading anything: a 100 MB JSON would otherwise
+    // sit in the json parser's intermediate state and OOM the daemon. Reject
+    // upfront with a clear error.
+    std::error_code ec;
+    auto sz = std::filesystem::file_size(json_path, ec);
+    if (ec)
+        return std::unexpected("Cannot stat file: " + json_path + " (" + ec.message() + ")");
+    if (sz > kMaxConfigBytes) {
+        return std::unexpected(
+            "Config file too large: " + std::to_string(sz) + " bytes (limit "
+            + std::to_string(kMaxConfigBytes) + ")");
+    }
+
     std::ifstream f(json_path);
     if (!f.is_open())
         return std::unexpected("Cannot open file: " + json_path);

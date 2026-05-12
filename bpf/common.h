@@ -260,8 +260,10 @@ enum stat_key {
     STAT_DROP_L4_V6_EXT_DEPTH = 40,  /* L4 ext-header walker exhausted bound — fail closed */
     STAT_DROP_L3_V6_EXT_DEPTH = 41,  /* L3 ext-header walker exhausted bound — fail closed */
     STAT_TC_TAG_V6_UNIMPL    = 42,   /* TC ACT_TAG on IPv6 — Traffic Class rewrite TBD */
+    STAT_TC_NO_META          = 43,   /* TC entered with no XDP data_meta — pre-XDP traffic (P1#13) */
+    STAT_TC_MIRROR_NO_IFINDEX = 44,  /* ACT_MIRROR with mirror_ifindex==0 — dead mirror config (P1#14) */
 
-    STAT__MAX                = 43,
+    STAT__MAX                = 45,
 };
 
 #define MAX_STATS STAT__MAX

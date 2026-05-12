@@ -1,6 +1,10 @@
 #include "config/config_parser.hpp"
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <unistd.h>
 
 using namespace pktgate::config;
 
@@ -654,6 +658,45 @@ TEST(test_parse_tcp_flags_invalid_name) {
         }] }
     })");
     assert(!result.has_value());
+}
+
+TEST(test_parse_config_oversize_file_rejected) {
+    // Closes P1#12. A 20 MiB blob exceeds the 16 MiB guard. We don't even
+    // need it to be valid JSON — the size check fires before parsing.
+    char tmpl[] = "/tmp/pktgate_oversize_XXXXXX";
+    int fd = mkstemp(tmpl);
+    assert(fd >= 0);
+    std::string path = tmpl;
+    {
+        std::ofstream f(path);
+        std::string blob(20ULL * 1024 * 1024, 'x');
+        f.write(blob.data(), blob.size());
+    }
+    close(fd);
+
+    auto result = parse_config(path);
+    bool ok = !result.has_value()
+              && result.error().find("too large") != std::string::npos;
+    std::remove(path.c_str());
+    assert(ok);
+}
+
+TEST(test_parse_config_normal_size_accepted) {
+    // Sanity: a small valid file still passes the size gate.
+    char tmpl[] = "/tmp/pktgate_normal_XXXXXX";
+    int fd = mkstemp(tmpl);
+    assert(fd >= 0);
+    std::string path = tmpl;
+    {
+        std::ofstream f(path);
+        f << R"({"pipeline": {"layer_2": [], "layer_3": [], "layer_4": []}})";
+    }
+    close(fd);
+
+    auto result = parse_config(path);
+    bool ok = result.has_value();
+    std::remove(path.c_str());
+    assert(ok);
 }
 
 int main() {
