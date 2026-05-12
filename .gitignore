@@ -31,3 +31,15 @@ fuzz/corpus/
 fuzz/crash-*
 fuzz/leak-*
 fuzz/timeout-*
+
+# Local dev / tooling state
+.cache/
+.clangd
+Testing/
+
+# Internal customer brief — not for public repo
+_.txt
+
+# In-progress scenario configs (post-#2 dst_ip rejection these need migration)
+scenarios/
+scenarios_v2/
