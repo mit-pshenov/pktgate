@@ -285,6 +285,51 @@ TEST(test_online_cpu_count_bounds) {
     assert(online <= possible);
 }
 
+TEST(test_l4_capacity_exceeded_rejected) {
+    // P1#10: pre-deploy capacity guard for L4 rules. One port_group expands
+    // to one l4_rules entry per port. MAX_PORT_ENTRIES=4096; install a
+    // group with 4097 ports → compile_rules must reject with a named
+    // diagnostic, not let it fail mid-batch-update at deploy time.
+    config::ObjectStore objects;
+    std::vector<uint16_t> ports;
+    ports.reserve(4097);
+    for (uint16_t p = 1; p <= 4097; ++p) ports.push_back(p);
+    objects.port_groups["huge"] = ports;
+
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "object:huge";
+    r.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(!result.has_value());
+    assert(result.error().find("MAX_PORT_ENTRIES") != std::string::npos);
+}
+
+TEST(test_l4_capacity_at_limit_accepted) {
+    // Exactly at the cap should still compile. Anchors the off-by-one.
+    config::ObjectStore objects;
+    std::vector<uint16_t> ports;
+    ports.reserve(4096);
+    for (uint16_t p = 1; p <= 4096; ++p) ports.push_back(p);
+    objects.port_groups["full"] = ports;
+
+    config::Pipeline pipeline;
+    config::Rule r;
+    r.rule_id = 1;
+    r.match.protocol = "TCP";
+    r.match.dst_port = "object:full";
+    r.action = config::Action::Allow;
+    pipeline.layer_4.push_back(r);
+
+    auto result = compiler::compile_rules(pipeline, objects, null_resolver);
+    assert(result.has_value());
+    assert(result->l4_rules.size() == 4096);
+}
+
 TEST(test_rate_limit_divisor_uses_online_cpus) {
     // 100Mbps / online_cpus should equal the per-CPU rate the compiler
     // installs. If anyone reverts to num_possible_cpus on a kernel with

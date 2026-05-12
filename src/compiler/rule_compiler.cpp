@@ -395,6 +395,40 @@ compile_rules(const config::Pipeline& pipeline,
         }
     }
 
+    // ── Per-map capacity guards (P1#10) ────────────────────────
+    //
+    // Each BPF hash/LPM/array has a fixed max_entries cap in bpf/common.h /
+    // bpf/maps.h. Before this check, exceeding any cap surfaced only at
+    // deploy time as the kernel returning -E2BIG mid-batch-update, leaving
+    // the shadow generation partially populated. Catching it here fails
+    // fast with a human-readable diagnostic naming the specific limit.
+    {
+        size_t vrf_count = 0;
+        size_t subnet_v4_count = 0;
+        for (auto& cr : result.l3_rules) {
+            if (cr.is_vrf_rule) ++vrf_count;
+            else                ++subnet_v4_count;
+        }
+
+        struct Limit { const char* label; size_t actual; size_t cap; };
+        const Limit limits[] = {
+            {"L2 rules (MAX_L2_ENTRIES)",      result.l2_rules.size(),   MAX_L2_ENTRIES},
+            {"L3 IPv4 subnets (MAX_SUBNET_ENTRIES)", subnet_v4_count,    MAX_SUBNET_ENTRIES},
+            {"L3 IPv6 subnets (MAX_SUBNET_ENTRIES)", result.l3v6_rules.size(), MAX_SUBNET_ENTRIES},
+            {"L3 VRF rules (MAX_VRF_ENTRIES)", vrf_count,                MAX_VRF_ENTRIES},
+            {"L4 rules (MAX_PORT_ENTRIES)",    result.l4_rules.size(),   MAX_PORT_ENTRIES},
+        };
+
+        for (auto& l : limits) {
+            if (l.actual > l.cap) {
+                return std::unexpected(
+                    std::string("Map capacity exceeded: ") + l.label
+                    + " has " + std::to_string(l.actual)
+                    + " entries (cap " + std::to_string(l.cap) + ")");
+            }
+        }
+    }
+
     return result;
 }
 

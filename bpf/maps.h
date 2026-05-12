@@ -38,7 +38,8 @@ struct {
  * iterates the active-mask array and projects the parsed fields through
  * each mask to compute the lookup key (bounded by MAX_L2_MASKS). */
 
-#define MAX_L2_ENTRIES  16384
+/* MAX_L2_ENTRIES is defined in common.h so userspace capacity checks
+ * (P1#10) can see it without including this BPF-only header. */
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);

@@ -2241,7 +2241,7 @@ int main() {
     // Populate maps with standard test config (gen 0)
     setup_standard_config(loader, 0);
 
-    int passed = 0, failed = 0, skipped = 0;
+    int passed = 0, failed = 0;
     for (auto& [name, fn] : tests) {
         try {
             fn(loader);

@@ -27,6 +27,7 @@
 #define MAX_ETHERTYPE_ENTRIES 64
 #define MAX_VLAN_ENTRIES    4096
 #define MAX_PCP_ENTRIES     8
+#define MAX_L2_ENTRIES      16384  /* composite-key l2_rules hash */
 
 /* Layer indices inside prog_array */
 #define LAYER_2_IDX  0

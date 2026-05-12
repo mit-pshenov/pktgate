@@ -88,15 +88,27 @@ Entry XDP program
 ### 3.2. Layer 2 — Ethernet Filtering
 
 ```c
-// 4 hash maps проверяются в фиксированном порядке (first match wins):
-//   src_mac → dst_mac → ethertype → vlan_id
+// Single composite-key HASH (post-#10 refactor). Previously 5 per-field maps
+// were probed in lexical order, which paid 5× hash lookups per packet AND
+// silently dropped fields beyond the lexically-first one in compound rules.
 //
-// Ключи:
-struct mac_key       { __u8 addr[6]; __u8 _pad[2]; };  // src/dst MAC
-struct ethertype_key { __u16 ethertype; __u16 _pad; };  // NBO
-struct vlan_key      { __u16 vlan_id;  __u16 _pad; };   // host byte order
+// Now: one l2_rules_{gen} HASH keyed on `struct l2_key` (all five possible
+// fields + a filter_mask bit naming which fields the rule actually constrains).
+// Fields the rule doesn't pin are zero. A second tiny ARRAY l2_active_masks_{gen}
+// (max 8 entries) lists the distinct filter_mask values currently present, so
+// the BPF datapath knows which projections to try without scanning all 32
+// combinations.
 
-// Значение — полноценное правило с action:
+struct l2_key {
+    __u8  filter_mask;     // FILTER_MASK_{PCP,ETHERTYPE,VLAN,SRCMAC,DSTMAC}
+    __u8  pcp;             // 0-7,  valid iff PCP bit
+    __u16 ethertype;       // NBO,  valid iff ETHERTYPE bit
+    __u16 vlan_id;         // host, valid iff VLAN bit
+    __u8  src_mac[6];      // valid iff SRCMAC bit
+    __u8  dst_mac[6];      // valid iff DSTMAC bit
+    __u8  _pad[2];
+};
+
 struct l2_rule {
     __u32 rule_id;
     __u32 action;            // ACT_ALLOW/DROP/REDIRECT/MIRROR
@@ -106,8 +118,19 @@ struct l2_rule {
     __u8  _pad[3];
 };
 
+// BPF datapath (layer2_prog):
+//   1. parse_l2 — extract pcp, ethertype, vlan_id, src_mac, dst_mac from the
+//      packet, then for each i ∈ [0, MAX_L2_MASKS):
+//        mask = l2_active_masks_{gen}[i]
+//        if mask == 0: break
+//        build_l2_key(out, mask, parsed_fields)  // project parsed → keyed
+//        rule = lookup(l2_rules_{gen}, out)
+//        if rule: dispatch action (first-match wins, masks sorted by popcount
+//                 desc at deploy time so most-specific rule fires first).
+//
 // 802.1Q parsing: если h_proto == 0x8100, извлекается vlan_id
-// и inner ethertype. QinQ (0x88a8) не парсится.
+// и inner ethertype. QinQ (0x88a8) не парсится (test_l2_qinq_not_parsed
+// cements the gap as contract — fix blocked on test removal).
 //
 // On no match L2 consults layer_present_{gen}[0]:
 //   - bit LAYER_PRESENT_L2 set → apply configured default_behavior
@@ -118,31 +141,55 @@ struct l2_rule {
 // from `rules.l2_rules.empty()`. A planned follow-up adds per-layer
 // default_behavior so operators can be explicit instead of relying on
 // emptiness-as-skip.
+//
+// Latency note: bench_l2_no_match_fallthrough_1M shows ~590 ns/pkt
+// post-refactor vs ~294 ns pre-refactor — the verifier doesn't optimise
+// the unrolled mask-iteration as well as the design predicted. Tracked
+// as a follow-up (see _review/HANDOVER.md §performance).
 ```
 
 ### 3.3. Layer 3 — IP / VRF Filtering
 
 ```c
-// BPF_MAP_TYPE_LPM_TRIE — subnets
+// BPF_MAP_TYPE_LPM_TRIE — IPv4 subnets
 struct lpm_v4_key {
     __u32 prefixlen;
     __u32 addr;
 };
 // compile-time assert: sizeof == 8 (no padding) — in common.h for BPF and C++
 
-// Правила с match по src_ip:
-//   lookup в LPM trie → action (mirror / redirect / allow)
+// BPF_MAP_TYPE_LPM_TRIE — IPv6 subnets (post-P0-03/04: IPv6 as a class)
+struct lpm_v6_key {
+    __u32 prefixlen;
+    __u8  addr[16];          // network byte order
+};
+
+// IPv4 path:
+//   match по src_ip → lookup в subnet_rules_{gen} → action
+//   match по vrf  → lookup в vrf_rules_{gen} keyed by ingress_ifindex
+//   non-first fragments (frag_off & 0x1FFF != 0) → drop in L3
+//     (no L4 header to inspect). Counter: STAT_DROP_L3_FRAGMENT.
 //
-// Правила с match по vrf:
-//   VRF ID читается из skb->mark или ifindex → lookup в hash map
+// IPv6 path:
+//   1. Stamp pkt_meta.ip_family = IP_FAMILY_V6 — every downstream action site
+//      gates on this so IPv4-shaped writes (DSCP via iph->tos, ipv4 LPM, …)
+//      can't fire on v6 traffic (closed P0-03/04 family-leak bugs).
+//   2. Walk up to 4 extension headers searching for Fragment (nexthdr=44).
+//      Any Fragment → drop with STAT_DROP_L3_V6_FRAGMENT. Closes the old
+//      "Hop-by-Hop → Fragment hides from L3" bypass; L4 walks again for
+//      defense in depth and bumps STAT_DROP_L4_V6_FRAGMENT.
+//   3. Bound exhausted with chain still on an ext-header → fail-closed
+//      drop with STAT_DROP_L3_V6_EXT_DEPTH (mirror at L4).
+//   4. subnet6_rules_{gen} lookup (LPM v6) → action.
 //
-// IP-фрагменты: non-first fragments (frag_off & 0x1FFF != 0)
-//   дропаются в L3, т.к. не содержат L4 заголовков.
-//   Счётчик: STAT_DROP_L3_FRAGMENT
+// Actions (both v4 and v6):
+//   - mirror: defer to TC via pkt_meta.action_flags |= (1 << ACT_MIRROR);
+//     TC ingress then bpf_clone_redirect(skb, mirror_ifindex, 0). See 3.6.
+//   - redirect: bpf_redirect(ifindex, 0) at XDP — bypasses TC.
 //
-// mirror: clone + redirect через bpf_clone_redirect()
-//   (Требует TC, а не XDP — см. секцию 3.6)
-// redirect: bpf_redirect() на другой ifindex (target_vrf)
+// Validator rejects dst_ip/dst_ip6 as match fields (closed P0-01): there is
+// no destination LPM trie, only source. Previously the compiler silently
+// expanded dst_ip into 0.0.0.0/0 (matched everything).
 ```
 
 ### 3.4. Layer 4 — Transport Filtering
@@ -166,7 +213,7 @@ struct port_val { __u32 group_id; };  // к какой группе принад
 | `mirror`    | `bpf_clone_redirect(skb, ifindex, 0)` — **только TC**            | TC      |
 | `redirect`  | `bpf_redirect(ifindex, 0)` — перенаправление в другой VRF/порт   | XDP/TC  |
 | `tag`       | IPv4: перезапись DSCP — `iph->tos = (iph->tos & 0x3) \| (dscp << 2)` + L3 checksum update. IPv6: stub (`STAT_TC_TAG_V6_UNIMPL`, требует отдельной реализации). `cos` (802.1p PCP rewrite) отвергается валидатором — нужен `bpf_skb_vlan_push/pop` | TC |
-| `rate-limit`| Per-CPU token bucket: `PERCPU_HASH`, rate/ncpus, 1s burst cap, elapsed clamp | XDP |
+| `rate-limit`| Per-CPU token bucket: `PERCPU_HASH`, rate/online_cpus (P1#6 — was possible CPUs, ~1000× under-limit on stock NR_CPUS=8192 kernels), 1s burst cap, elapsed clamp. State garbage-collected at every commit() — keys not in the new active rate-limit ruleset are pruned, preventing the 4096-entry leak that previously silently disabled rate-limit (P1#7) | XDP |
 
 ### 3.6. Гибридная модель XDP + TC
 
@@ -193,25 +240,31 @@ drop/allow/redirect — используется чистый XDP. Если ес
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
 │ gen_config             │ ARRAY(1)             │ 0 → active_gen (__u32)       │
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
-│ prog_array_0/1         │ PROG_ARRAY(4)        │ layer_idx → prog_fd         │
-│ l2_src_mac_0/1         │ HASH(4096)           │ mac_key[8] → l2_rule        │
-│ l2_dst_mac_0/1         │ HASH(4096)           │ mac_key[8] → l2_rule        │
-│ l2_ethertype_0/1       │ HASH(64)             │ ethertype_key → l2_rule     │
-│ l2_vlan_0/1            │ HASH(4096)           │ vlan_key → l2_rule          │
-│ subnet_rules_0/1       │ LPM_TRIE(16384)      │ lpm_v4_key → l3_rule        │
+│ prog_array_0/1         │ PROG_ARRAY(4)        │ layer_idx → prog_fd          │
+│ l2_rules_0/1           │ HASH(16384)          │ l2_key → l2_rule             │
+│ l2_active_masks_0/1    │ ARRAY(8)             │ slot → __u8 (filter_mask)    │
+│ subnet_rules_0/1       │ LPM_TRIE(16384)      │ lpm_v4_key → l3_rule         │
+│ subnet6_rules_0/1      │ LPM_TRIE(16384)      │ lpm_v6_key → l3_rule         │
 │ vrf_rules_0/1          │ HASH(256)            │ vrf_key → l3_rule            │
 │ l4_rules_0/1           │ HASH(4096)           │ l4_match_key → l4_rule       │
 │ default_action_0/1     │ ARRAY(1)             │ 0 → __u32 (filter_action)    │
 │ layer_present_0/1      │ ARRAY(1)             │ 0 → __u8 (LAYER_PRESENT_*)   │
 ├────────────────────────┼──────────────────────┼──────────────────────────────┤
 │ rate_state_map         │ PERCPU_HASH(4096)    │ rule_id → rate_state         │
-│ stats_map              │ PERCPU_ARRAY(40)     │ stat_key → __u64 (counter)   │
+│ stats_map              │ PERCPU_ARRAY(45)     │ stat_key → __u64 (packets)   │
+│ bytes_map              │ PERCPU_ARRAY(45)     │ stat_key → __u64 (bytes)     │
 └────────────────────────┴──────────────────────┴──────────────────────────────┘
 
-Итого: 21 maps (2 shared + 9×2 double-buffered + 1 rate_state).
+Итого 23 maps: 4 shared + 9×2 double-buffered + 1 rate_state.
 Maps _0/_1 — двойная буферизация для generation swap.
-rate_state_map и stats_map общие (не буферизируются).
-stats_map — 40 per-CPU счётчиков: entry/L2/L3/L4 drops, pass/actions, TC mirror/tag, IPv6 L3/L4, fragment/proto drops (см. секцию 8).
+rate_state_map, stats_map, bytes_map общие (не буферизируются).
+stats_map / bytes_map — 45 per-CPU слотов (packet+byte counters in parallel,
+keyed identically). Полный enum stat_key в секции 8.
+
+Per-map capacity is enforced TWICE: kernel via `max_entries`, and userspace
+in `compile_rules` (P1#10) before deploy so an oversize config is rejected
+with a named diagnostic ("Map capacity exceeded: L4 rules has 8000 entries
+(cap 4096)") instead of failing mid-batch-update with -E2BIG.
 ```
 
 **`pkt_meta`** — передаётся через XDP `data_meta` area (не через BPF map):
@@ -223,7 +276,9 @@ struct pkt_meta {
     __u32 mirror_ifindex;   // ifindex для mirror
     __u8  dscp;             // DSCP для tag
     __u8  cos;              // CoS для tag
-    __u8  _pad[2];
+    __u8  ip_family;        // IP_FAMILY_V4 | IP_FAMILY_V6 — stamped by L3,
+                            //   read by L4/TC to gate v4-shaped writes
+    __u8  _pad;
 };
 // sizeof == 20 байт, помещается в data_meta area
 ```
@@ -614,7 +669,7 @@ enum stat_key {
     STAT_TC_MIRROR           = 26,   // bpf_clone_redirect success
     STAT_TC_MIRROR_FAIL      = 27,   // bpf_clone_redirect failed
     STAT_TC_TAG              = 28,   // DSCP rewrite applied
-    STAT_TC_NOOP             = 29,   // no deferred actions
+    STAT_TC_NOOP             = 29,   // XDP ran, no deferred TC action
 
     // Additional drops
     STAT_DROP_L3_FRAGMENT    = 30,   // IP fragment (non-first) dropped
@@ -632,9 +687,24 @@ enum stat_key {
     STAT_PASS_L2             = 38,   // L2 rule ALLOW (terminal, no next_layer)
     STAT_DROP_L2_REDIRECT_FAIL = 39, // L2 redirect with ifindex=0
 
-    STAT__MAX                = 40,
+    // IPv6 ext-header hardening (P0-03/04, P1#8)
+    STAT_DROP_L4_V6_EXT_DEPTH = 40,  // L4 ext-header walker fail-closed
+    STAT_DROP_L3_V6_EXT_DEPTH = 41,  // L3 ext-header walker fail-closed
+    STAT_TC_TAG_V6_UNIMPL    = 42,   // TC ACT_TAG on IPv6 — TC rewrite TBD
+
+    // TC observability split (P1#13/P1#14)
+    STAT_TC_NO_META          = 43,   // TC entered without XDP data_meta —
+                                     //   XDP detached or driver stripped meta
+    STAT_TC_MIRROR_NO_IFINDEX = 44,  // ACT_MIRROR with mirror_ifindex==0
+
+    STAT__MAX                = 45,
 };
 ```
+
+`bytes_map` (added in P0-08) shares the same key space, accumulating
+bytes instead of packets. Each `STAT_COUNT(key, pkt_len)` site bumps
+both maps; `STAT_INC(key)` bumps only the packet counter. Prometheus
+exporter emits `*_packets_total` and `*_bytes_total` series in parallel.
 
 ### 8.2. Чтение статистики
 

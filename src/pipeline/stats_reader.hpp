@@ -93,6 +93,14 @@ public:
             "  l3v6/default_drop:    %llu\n"
             "  l3v6/fragment:        %llu\n"
             "  l4/v6_fragment:       %llu\n"
+            "  l3v6/ext_depth:       %llu\n"
+            "  l4/v6_ext_depth:      %llu\n"
+            "  tc/tag_v6_unimpl:     %llu\n"
+            "\n"
+            "  --- L2 extended ---\n"
+            "  l2/rule_drop:         %llu\n"
+            "  l2/pass:              %llu\n"
+            "  l2/redirect_fail:     %llu\n"
             "\n"
             "  --- Additional ---\n"
             "  l3/fragment:          %llu\n"
@@ -135,6 +143,12 @@ public:
             (unsigned long long)totals[STAT_DROP_L3_V6_DEFAULT],
             (unsigned long long)totals[STAT_DROP_L3_V6_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L4_V6_FRAGMENT],
+            (unsigned long long)totals[STAT_DROP_L3_V6_EXT_DEPTH],
+            (unsigned long long)totals[STAT_DROP_L4_V6_EXT_DEPTH],
+            (unsigned long long)totals[STAT_TC_TAG_V6_UNIMPL],
+            (unsigned long long)totals[STAT_DROP_L2_RULE],
+            (unsigned long long)totals[STAT_PASS_L2],
+            (unsigned long long)totals[STAT_DROP_L2_REDIRECT_FAIL],
             (unsigned long long)totals[STAT_DROP_L3_FRAGMENT],
             (unsigned long long)totals[STAT_DROP_L4_NOT_IPV4]);
     }
