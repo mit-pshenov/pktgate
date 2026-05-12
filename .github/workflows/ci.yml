@@ -137,11 +137,13 @@ jobs:
 
   functional:
     runs-on: ubuntu-24.04
-    # Surfaces pre-existing failures (L2 default_behavior, IPv6 ext-headers)
-    # that the CI shape fix uncovered. Treat as advisory until the underlying
-    # bugs land their fixes (tracked in TaskList items for L2 default-behavior
-    # and #4 IPv6-as-a-class). Flip back to required once all known clusters
-    # are closed.
+    # All P0/P1 functional-cluster bugs surfaced by the CI shape fix are
+    # closed (L2 default_behavior, IPv6 ext-headers, IPv6 frag-behind-HBH).
+    # In isolation every test passes. A residual test-ordering flake affects
+    # 2 IPv6 tests in test_l3_ipv6.py — session-scoped pktgate fixture state
+    # leaks (suspected: rate_state_map / shared L2 maps across tests). Keep
+    # continue-on-error until the fixture is reworked to per-test or
+    # per-class scope. Tracked as a follow-up.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
