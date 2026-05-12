@@ -19,7 +19,7 @@
  *    otherwise apply default action.
  */
 
-static __always_inline int get_default_action(struct pkt_meta *meta)
+static __always_inline int get_default_action(struct pkt_meta *meta, __u32 pkt_len)
 {
     __u32 key = 0;
     __u32 *def = NULL;
@@ -30,14 +30,14 @@ static __always_inline int get_default_action(struct pkt_meta *meta)
         def = bpf_map_lookup_elem(&default_action_1, &key);
 
     if (!def || *def == ACT_DROP) {
-        STAT_INC(STAT_DROP_L3_DEFAULT);
+        STAT_COUNT(STAT_DROP_L3_DEFAULT, pkt_len);
         return XDP_DROP;
     }
-    STAT_INC(STAT_PASS_L3);
+    STAT_COUNT(STAT_PASS_L3, pkt_len);
     return XDP_PASS;
 }
 
-static __always_inline int get_default_action_v6(struct pkt_meta *meta)
+static __always_inline int get_default_action_v6(struct pkt_meta *meta, __u32 pkt_len)
 {
     __u32 key = 0;
     __u32 *def = NULL;
@@ -48,33 +48,34 @@ static __always_inline int get_default_action_v6(struct pkt_meta *meta)
         def = bpf_map_lookup_elem(&default_action_1, &key);
 
     if (!def || *def == ACT_DROP) {
-        STAT_INC(STAT_DROP_L3_V6_DEFAULT);
+        STAT_COUNT(STAT_DROP_L3_V6_DEFAULT, pkt_len);
         return XDP_DROP;
     }
-    STAT_INC(STAT_PASS_L3_V6);
+    STAT_COUNT(STAT_PASS_L3_V6, pkt_len);
     return XDP_PASS;
 }
 
 static __always_inline int handle_l3_action(struct xdp_md *ctx,
                                             struct pkt_meta *meta,
-                                            struct l3_rule *rule)
+                                            struct l3_rule *rule,
+                                            __u32 pkt_len)
 {
     switch (rule->action) {
     case ACT_ALLOW:
         break;
 
     case ACT_DROP:
-        STAT_INC(STAT_DROP_L3_RULE);
+        STAT_COUNT(STAT_DROP_L3_RULE, pkt_len);
         BPF_DBG("L3: rule %d → DROP", rule->rule_id);
         return XDP_DROP;
 
     case ACT_REDIRECT:
         if (rule->redirect_ifindex) {
-            STAT_INC(STAT_REDIRECT);
+            STAT_COUNT(STAT_REDIRECT, pkt_len);
             BPF_DBG("L3: rule %d → REDIRECT ifindex=%d", rule->rule_id, rule->redirect_ifindex);
             return bpf_redirect(rule->redirect_ifindex, 0);
         }
-        STAT_INC(STAT_DROP_L3_REDIRECT_FAIL);
+        STAT_COUNT(STAT_DROP_L3_REDIRECT_FAIL, pkt_len);
         BPF_DBG("L3: rule %d → REDIRECT with ifindex=0", rule->rule_id);
         return XDP_DROP;
 
@@ -86,12 +87,12 @@ static __always_inline int handle_l3_action(struct xdp_md *ctx,
          */
         meta->action_flags |= (1 << ACT_MIRROR);
         meta->mirror_ifindex = rule->mirror_ifindex;
-        STAT_INC(STAT_MIRROR);
+        STAT_COUNT(STAT_MIRROR, pkt_len);
         BPF_DBG("L3: rule %d → MIRROR ifindex=%d", rule->rule_id, rule->mirror_ifindex);
         break;
 
     default:
-        STAT_INC(STAT_DROP_L3_RULE);
+        STAT_COUNT(STAT_DROP_L3_RULE, pkt_len);
         return XDP_DROP;
     }
 
@@ -107,43 +108,44 @@ static __always_inline int handle_l3_action(struct xdp_md *ctx,
         return XDP_DROP;
     }
 
-    STAT_INC(STAT_PASS_L3);
+    STAT_COUNT(STAT_PASS_L3, pkt_len);
     return XDP_PASS;
 }
 
 /* IPv6 variant — identical logic but uses v6-specific stat counters */
 static __always_inline int handle_l3_action_v6(struct xdp_md *ctx,
                                                struct pkt_meta *meta,
-                                               struct l3_rule *rule)
+                                               struct l3_rule *rule,
+                                               __u32 pkt_len)
 {
     switch (rule->action) {
     case ACT_ALLOW:
         break;
 
     case ACT_DROP:
-        STAT_INC(STAT_DROP_L3_V6_RULE);
+        STAT_COUNT(STAT_DROP_L3_V6_RULE, pkt_len);
         BPF_DBG("L3v6: rule %d → DROP", rule->rule_id);
         return XDP_DROP;
 
     case ACT_REDIRECT:
         if (rule->redirect_ifindex) {
-            STAT_INC(STAT_REDIRECT);
+            STAT_COUNT(STAT_REDIRECT, pkt_len);
             BPF_DBG("L3v6: rule %d → REDIRECT ifindex=%d", rule->rule_id, rule->redirect_ifindex);
             return bpf_redirect(rule->redirect_ifindex, 0);
         }
-        STAT_INC(STAT_DROP_L3_REDIRECT_FAIL);
+        STAT_COUNT(STAT_DROP_L3_REDIRECT_FAIL, pkt_len);
         BPF_DBG("L3v6: rule %d → REDIRECT with ifindex=0", rule->rule_id);
         return XDP_DROP;
 
     case ACT_MIRROR:
         meta->action_flags |= (1 << ACT_MIRROR);
         meta->mirror_ifindex = rule->mirror_ifindex;
-        STAT_INC(STAT_MIRROR);
+        STAT_COUNT(STAT_MIRROR, pkt_len);
         BPF_DBG("L3v6: rule %d → MIRROR ifindex=%d", rule->rule_id, rule->mirror_ifindex);
         break;
 
     default:
-        STAT_INC(STAT_DROP_L3_V6_RULE);
+        STAT_COUNT(STAT_DROP_L3_V6_RULE, pkt_len);
         return XDP_DROP;
     }
 
@@ -157,7 +159,7 @@ static __always_inline int handle_l3_action_v6(struct xdp_md *ctx,
         return XDP_DROP;
     }
 
-    STAT_INC(STAT_PASS_L3_V6);
+    STAT_COUNT(STAT_PASS_L3_V6, pkt_len);
     return XDP_PASS;
 }
 
@@ -166,6 +168,7 @@ int layer3_prog(struct xdp_md *ctx)
 {
     unsigned char *data     = (unsigned char *)(long)ctx->data;
     unsigned char *data_end = (unsigned char *)(long)ctx->data_end;
+    __u32 pkt_len = (__u32)(data_end - data);
 
     /* Skip Ethernet header */
     struct ethhdr *eth = (struct ethhdr *)data;
@@ -243,7 +246,7 @@ int layer3_prog(struct xdp_md *ctx)
             rule6 = bpf_map_lookup_elem(&subnet6_rules_1, &lpm6_key);
 
         if (rule6)
-            return handle_l3_action_v6(ctx, meta, rule6);
+            return handle_l3_action_v6(ctx, meta, rule6, pkt_len);
 
         /* VRF fallback */
         struct vrf_key vkey6 = { .ifindex = ctx->ingress_ifindex };
@@ -254,7 +257,7 @@ int layer3_prog(struct xdp_md *ctx)
             vrule6 = bpf_map_lookup_elem(&vrf_rules_1, &vkey6);
 
         if (vrule6)
-            return handle_l3_action_v6(ctx, meta, vrule6);
+            return handle_l3_action_v6(ctx, meta, vrule6, pkt_len);
 
         /* No match — try Layer 4, fall back to default */
         if (meta->generation == 0)
@@ -262,7 +265,7 @@ int layer3_prog(struct xdp_md *ctx)
         else
             bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
 
-        return get_default_action_v6(meta);
+        return get_default_action_v6(meta, pkt_len);
     }
 
     /* ── IPv4 path ─────────────────────────────────────────── */
@@ -298,7 +301,7 @@ int layer3_prog(struct xdp_md *ctx)
         rule = bpf_map_lookup_elem(&subnet_rules_1, &lpm_key);
 
     if (rule)
-        return handle_l3_action(ctx, meta, rule);
+        return handle_l3_action(ctx, meta, rule, pkt_len);
 
     /* No subnet match — check VRF rules */
     struct vrf_key vkey = { .ifindex = ctx->ingress_ifindex };
@@ -310,7 +313,7 @@ int layer3_prog(struct xdp_md *ctx)
         vrule = bpf_map_lookup_elem(&vrf_rules_1, &vkey);
 
     if (vrule)
-        return handle_l3_action(ctx, meta, vrule);
+        return handle_l3_action(ctx, meta, vrule, pkt_len);
 
     /* No match — try Layer 4, fall back to default action */
     if (meta->generation == 0)
@@ -319,7 +322,7 @@ int layer3_prog(struct xdp_md *ctx)
         bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
 
     /* Tail call failed (no L4 program) — apply default action */
-    return get_default_action(meta);
+    return get_default_action(meta, pkt_len);
 }
 
 char LICENSE[] SEC("license") = "GPL";

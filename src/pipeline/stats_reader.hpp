@@ -21,6 +21,7 @@ public:
     /// Read all counters, sum across CPUs, print to stderr.
     void print() const {
         int fd = loader_.stats_map_fd();
+        int bfd = loader_.bytes_map_fd();
         if (fd < 0) {
             std::fprintf(stderr, "[STATS] stats_map not available\n");
             return;
@@ -32,17 +33,22 @@ public:
         // Per-CPU values buffer
         std::vector<uint64_t> values(ncpus);
         std::array<uint64_t, STAT__MAX> totals{};
+        std::array<uint64_t, STAT__MAX> bytes{};
 
         for (uint32_t k = 0; k < STAT__MAX; k++) {
             if (bpf_map_lookup_elem(fd, &k, values.data()) == 0) {
                 for (int c = 0; c < ncpus; c++)
                     totals[k] += values[c];
             }
+            if (bfd >= 0 && bpf_map_lookup_elem(bfd, &k, values.data()) == 0) {
+                for (int c = 0; c < ncpus; c++)
+                    bytes[k] += values[c];
+            }
         }
 
         std::fprintf(stderr,
             "\n[STATS] Packet statistics:\n"
-            "  packets_total:        %llu\n"
+            "  packets_total:        %llu  (%llu bytes)\n"
             "\n"
             "  --- Drops ---\n"
             "  entry/no_gen:         %llu\n"
@@ -90,6 +96,7 @@ public:
             "  l3/fragment:          %llu\n"
             "  l4/not_ipv4:          %llu\n",
             (unsigned long long)totals[STAT_PACKETS_TOTAL],
+            (unsigned long long)bytes[STAT_PACKETS_TOTAL],
             (unsigned long long)totals[STAT_DROP_NO_GEN],
             (unsigned long long)totals[STAT_DROP_NO_META],
             (unsigned long long)totals[STAT_DROP_ENTRY_TAIL],

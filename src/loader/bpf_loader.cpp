@@ -107,6 +107,7 @@ std::expected<void, std::string> BpfLoader::load() {
         REUSE_MAP(layer_present_1);
         REUSE_MAP(rate_state_map);
         REUSE_MAP(stats_map);
+        REUSE_MAP(bytes_map);
 
         #undef REUSE_MAP
         return {};
@@ -357,6 +358,11 @@ int BpfLoader::gen_config_fd() const {
 int BpfLoader::rate_state_fd() const {
     if (!impl_->entry) return -1;
     return bpf_map__fd(impl_->entry->maps.rate_state_map);
+}
+
+int BpfLoader::bytes_map_fd() const {
+    if (!impl_->entry) return -1;
+    return bpf_map__fd(impl_->entry->maps.bytes_map);
 }
 
 int BpfLoader::stats_map_fd() const {

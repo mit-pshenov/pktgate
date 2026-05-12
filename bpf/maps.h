@@ -222,14 +222,38 @@ struct {
     __type(value, __u64);
 } stats_map SEC(".maps");
 
+/* Bytes counter, parallel keyspace to stats_map. Each terminal stat site
+ * bumps both — callers reach for STAT_COUNT(key, len) rather than wiring
+ * two macros every time. Customer-brief asks for "per-rule pps/bps"; this
+ * gives bps at every rule-correlated stat slot. */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, MAX_STATS);
+    __type(key, __u32);
+    __type(value, __u64);
+} bytes_map SEC(".maps");
+
 /*
- * STAT_INC — atomically increment a per-CPU stats counter.
+ * STAT_INC — atomically increment a per-CPU packet counter.
  * Zero-cost on the hot path: single map lookup + increment.
  */
 #define STAT_INC(stat_key_val) do {                    \
     __u32 _sk = (stat_key_val);                        \
     __u64 *_cnt = bpf_map_lookup_elem(&stats_map, &_sk); \
     if (_cnt) (*_cnt)++;                               \
+} while (0)
+
+/* STAT_ADD_BYTES — bump byte counter for the same stat slot. */
+#define STAT_ADD_BYTES(stat_key_val, pkt_len) do {           \
+    __u32 _bk = (stat_key_val);                              \
+    __u64 *_b = bpf_map_lookup_elem(&bytes_map, &_bk);       \
+    if (_b) (*_b) += (pkt_len);                              \
+} while (0)
+
+/* STAT_COUNT — common case: bump packets and bytes for one stat slot. */
+#define STAT_COUNT(stat_key_val, pkt_len) do {               \
+    STAT_INC(stat_key_val);                                   \
+    STAT_ADD_BYTES(stat_key_val, pkt_len);                    \
 } while (0)
 
 /* ── Rate limiter state (shared, not double-buffered) ─────── */

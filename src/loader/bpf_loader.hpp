@@ -41,6 +41,7 @@ public:
     int gen_config_fd() const;
     int rate_state_fd() const;
     int stats_map_fd() const;
+    int bytes_map_fd() const;
 
     // Program FD accessors (for inserting into prog_array)
     int entry_prog_fd() const;

@@ -43,7 +43,7 @@ static __always_inline bool l2_filters_match(struct l2_rule *rule,
 /* Apply the configured default_behavior at L2 no-match.
  * Mirrors get_default_action() in layer3.bpf.c — the global default_action
  * map is shared across layers. */
-static __always_inline int get_default_action_l2(struct pkt_meta *meta)
+static __always_inline int get_default_action_l2(struct pkt_meta *meta, __u32 pkt_len)
 {
     __u32 key = 0;
     __u32 *def = (meta->generation == 0)
@@ -51,46 +51,47 @@ static __always_inline int get_default_action_l2(struct pkt_meta *meta)
         : bpf_map_lookup_elem(&default_action_1, &key);
 
     if (!def || *def == ACT_DROP) {
-        STAT_INC(STAT_DROP_L2_NO_MATCH);
+        STAT_COUNT(STAT_DROP_L2_NO_MATCH, pkt_len);
         return XDP_DROP;
     }
-    STAT_INC(STAT_PASS_L2);
+    STAT_COUNT(STAT_PASS_L2, pkt_len);
     return XDP_PASS;
 }
 
 static __always_inline int handle_l2_action(struct xdp_md *ctx,
                                             struct pkt_meta *meta,
-                                            struct l2_rule *rule)
+                                            struct l2_rule *rule,
+                                            __u32 pkt_len)
 {
     switch (rule->action) {
     case ACT_ALLOW:
         break;
 
     case ACT_DROP:
-        STAT_INC(STAT_DROP_L2_RULE);
+        STAT_COUNT(STAT_DROP_L2_RULE, pkt_len);
         BPF_DBG("L2: rule %d → DROP", rule->rule_id);
         return XDP_DROP;
 
     case ACT_REDIRECT:
         if (rule->redirect_ifindex) {
-            STAT_INC(STAT_REDIRECT);
+            STAT_COUNT(STAT_REDIRECT, pkt_len);
             BPF_DBG("L2: rule %d → REDIRECT ifindex=%d",
                      rule->rule_id, rule->redirect_ifindex);
             return bpf_redirect(rule->redirect_ifindex, 0);
         }
-        STAT_INC(STAT_DROP_L2_REDIRECT_FAIL);
+        STAT_COUNT(STAT_DROP_L2_REDIRECT_FAIL, pkt_len);
         return XDP_DROP;
 
     case ACT_MIRROR:
         meta->action_flags |= (1 << ACT_MIRROR);
         meta->mirror_ifindex = rule->mirror_ifindex;
-        STAT_INC(STAT_MIRROR);
+        STAT_COUNT(STAT_MIRROR, pkt_len);
         BPF_DBG("L2: rule %d → MIRROR ifindex=%d",
                  rule->rule_id, rule->mirror_ifindex);
         break;
 
     default:
-        STAT_INC(STAT_DROP_L2_RULE);
+        STAT_COUNT(STAT_DROP_L2_RULE, pkt_len);
         return XDP_DROP;
     }
 
@@ -114,7 +115,7 @@ static __always_inline int handle_l2_action(struct xdp_md *ctx,
     }
 
     /* Terminal action — no next layer */
-    STAT_INC(STAT_PASS_L2);
+    STAT_COUNT(STAT_PASS_L2, pkt_len);
     return XDP_PASS;
 }
 
@@ -123,6 +124,7 @@ int layer2_prog(struct xdp_md *ctx)
 {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
+    __u32 pkt_len = (__u32)((unsigned char *)data_end - (unsigned char *)data);
 
     /* Bounds check for Ethernet header */
     struct ethhdr *eth = data;
@@ -171,7 +173,7 @@ int layer2_prog(struct xdp_md *ctx)
                       : bpf_map_lookup_elem(&l2_src_mac_1, &src_key);
     if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
         BPF_DBG("L2: src_mac match, rule %d", rule->rule_id);
-        return handle_l2_action(ctx, meta, rule);
+        return handle_l2_action(ctx, meta, rule, pkt_len);
     }
 
     /* ── 2. Destination MAC lookup ─────────────────────────── */
@@ -182,7 +184,7 @@ int layer2_prog(struct xdp_md *ctx)
                       : bpf_map_lookup_elem(&l2_dst_mac_1, &dst_key);
     if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
         BPF_DBG("L2: dst_mac match, rule %d", rule->rule_id);
-        return handle_l2_action(ctx, meta, rule);
+        return handle_l2_action(ctx, meta, rule, pkt_len);
     }
 
     /* ── 3. EtherType lookup ───────────────────────────────── */
@@ -193,7 +195,7 @@ int layer2_prog(struct xdp_md *ctx)
     if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
         BPF_DBG("L2: ethertype match 0x%x, rule %d",
                  bpf_ntohs(eth_proto), rule->rule_id);
-        return handle_l2_action(ctx, meta, rule);
+        return handle_l2_action(ctx, meta, rule, pkt_len);
     }
 
     /* ── 4. VLAN ID lookup ─────────────────────────────────── */
@@ -204,7 +206,7 @@ int layer2_prog(struct xdp_md *ctx)
                           : bpf_map_lookup_elem(&l2_vlan_1, &vkey);
         if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
             BPF_DBG("L2: vlan %d match, rule %d", vlan_id, rule->rule_id);
-            return handle_l2_action(ctx, meta, rule);
+            return handle_l2_action(ctx, meta, rule, pkt_len);
         }
     }
 
@@ -216,7 +218,7 @@ int layer2_prog(struct xdp_md *ctx)
                           : bpf_map_lookup_elem(&l2_pcp_1, &pkey);
         if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
             BPF_DBG("L2: pcp %d match, rule %d", pcp, rule->rule_id);
-            return handle_l2_action(ctx, meta, rule);
+            return handle_l2_action(ctx, meta, rule, pkt_len);
         }
     }
 
@@ -227,7 +229,7 @@ int layer2_prog(struct xdp_md *ctx)
     if (lp && (*lp & LAYER_PRESENT_L2)) {
         /* L2 has rules; none matched → apply default_behavior */
         BPF_DBG("L2: no match, applying default, gen=%d", gen);
-        return get_default_action_l2(meta);
+        return get_default_action_l2(meta, pkt_len);
     }
 
     /* L2 is empty for this generation → skip to Layer 3 unchanged */

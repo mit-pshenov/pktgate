@@ -14,8 +14,9 @@ SEC("xdp")
 int entry_prog(struct xdp_md *ctx)
 {
     __u32 key = 0;
+    __u32 pkt_len = (__u32)(ctx->data_end - ctx->data);
 
-    STAT_INC(STAT_PACKETS_TOTAL);
+    STAT_COUNT(STAT_PACKETS_TOTAL, pkt_len);
 
     /* Read active generation */
     __u32 *gen = bpf_map_lookup_elem(&gen_config, &key);

@@ -30,10 +30,28 @@ struct {
     __type(value, __u64);
 } stats_map SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, MAX_STATS);
+    __type(key, __u32);
+    __type(value, __u64);
+} bytes_map SEC(".maps");
+
 #define STAT_INC(stat_key_val) do {                    \
     __u32 _sk = (stat_key_val);                        \
     __u64 *_cnt = bpf_map_lookup_elem(&stats_map, &_sk); \
     if (_cnt) (*_cnt)++;                               \
+} while (0)
+
+#define STAT_ADD_BYTES(stat_key_val, pkt_len) do {           \
+    __u32 _bk = (stat_key_val);                              \
+    __u64 *_b = bpf_map_lookup_elem(&bytes_map, &_bk);       \
+    if (_b) (*_b) += (pkt_len);                              \
+} while (0)
+
+#define STAT_COUNT(stat_key_val, pkt_len) do {               \
+    STAT_INC(stat_key_val);                                   \
+    STAT_ADD_BYTES(stat_key_val, pkt_len);                    \
 } while (0)
 
 SEC("tc")
@@ -41,17 +59,18 @@ int tc_ingress_prog(struct __sk_buff *skb)
 {
     void *data      = (void *)(long)skb->data;
     void *data_meta = (void *)(long)skb->data_meta;
+    __u32 pkt_len = skb->len;
 
     struct pkt_meta *meta = data_meta;
     if ((void *)(meta + 1) > data) {
         /* No XDP metadata present — nothing to do */
-        STAT_INC(STAT_TC_NOOP);
+        STAT_COUNT(STAT_TC_NOOP, pkt_len);
         return TC_ACT_OK;
     }
 
     __u32 flags = meta->action_flags;
     if (flags == 0) {
-        STAT_INC(STAT_TC_NOOP);
+        STAT_COUNT(STAT_TC_NOOP, pkt_len);
         return TC_ACT_OK;
     }
 
@@ -71,10 +90,10 @@ int tc_ingress_prog(struct __sk_buff *skb)
         if (mirror_ifindex) {
             long ret = bpf_clone_redirect(skb, mirror_ifindex, 0);
             if (ret == 0) {
-                STAT_INC(STAT_TC_MIRROR);
+                STAT_COUNT(STAT_TC_MIRROR, pkt_len);
                 BPF_DBG("TC: mirror to ifindex=%d OK", mirror_ifindex);
             } else {
-                STAT_INC(STAT_TC_MIRROR_FAIL);
+                STAT_COUNT(STAT_TC_MIRROR_FAIL, pkt_len);
                 BPF_DBG("TC: mirror to ifindex=%d FAILED ret=%ld", mirror_ifindex, ret);
             }
         }
@@ -91,7 +110,7 @@ int tc_ingress_prog(struct __sk_buff *skb)
              * the v6 saddr — IPv6 has no header checksum there). Closing
              * P0-03 by no-op'ing v6 TAG until a proper rewrite helper lands.
              */
-            STAT_INC(STAT_TC_TAG_V6_UNIMPL);
+            STAT_COUNT(STAT_TC_TAG_V6_UNIMPL, pkt_len);
             BPF_DBG("TC: ACT_TAG on IPv6 — TBD, skipping");
         } else if (ip_family == IP_FAMILY_V4) {
             /* ETH header = 14 bytes, TOS = byte 1 of IP header → offset 15 */
@@ -111,7 +130,7 @@ int tc_ingress_prog(struct __sk_buff *skb)
                     bpf_l3_csum_replace(skb, 14 + 10,
                                         bpf_htons((__u16)old_tos),
                                         bpf_htons((__u16)new_tos), 2);
-                    STAT_INC(STAT_TC_TAG);
+                    STAT_COUNT(STAT_TC_TAG, pkt_len);
                     BPF_DBG("TC: DSCP rewrite old_tos=0x%x new_tos=0x%x", old_tos, new_tos);
                 }
             }

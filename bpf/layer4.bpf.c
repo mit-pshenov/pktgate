@@ -30,7 +30,7 @@ static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
             .rate_bps   = rule->rate_bps,
         };
         bpf_map_update_elem(&rate_state_map, &rid, &init, BPF_ANY);
-        STAT_INC(STAT_RATE_LIMIT_PASS);
+        STAT_COUNT(STAT_RATE_LIMIT_PASS, pkt_len);
         return XDP_PASS;
     }
 
@@ -67,17 +67,17 @@ static __always_inline int do_rate_limit(struct l4_rule *rule, __u32 pkt_len)
     /* Consume tokens */
     if (rs->tokens >= pkt_len) {
         rs->tokens -= pkt_len;
-        STAT_INC(STAT_RATE_LIMIT_PASS);
+        STAT_COUNT(STAT_RATE_LIMIT_PASS, pkt_len);
         return XDP_PASS;
     }
 
     /* Over limit — drop */
-    STAT_INC(STAT_DROP_L4_RATE_LIMIT);
+    STAT_COUNT(STAT_DROP_L4_RATE_LIMIT, pkt_len);
     BPF_DBG("L4: rate limit DROP rule=%d tokens=%llu pkt=%d", rid, rs->tokens, pkt_len);
     return XDP_DROP;
 }
 
-static __always_inline int get_default_action(struct pkt_meta *meta)
+static __always_inline int get_default_action(struct pkt_meta *meta, __u32 pkt_len)
 {
     __u32 key = 0;
     __u32 *def = NULL;
@@ -88,10 +88,10 @@ static __always_inline int get_default_action(struct pkt_meta *meta)
         def = bpf_map_lookup_elem(&default_action_1, &key);
 
     if (!def || *def == ACT_DROP) {
-        STAT_INC(STAT_DROP_L4_DEFAULT);
+        STAT_COUNT(STAT_DROP_L4_DEFAULT, pkt_len);
         return XDP_DROP;
     }
-    STAT_INC(STAT_PASS_L4);
+    STAT_COUNT(STAT_PASS_L4, pkt_len);
     return XDP_PASS;
 }
 
@@ -100,6 +100,7 @@ int layer4_prog(struct xdp_md *ctx)
 {
     unsigned char *data     = (unsigned char *)(long)ctx->data;
     unsigned char *data_end = (unsigned char *)(long)ctx->data_end;
+    __u32 pkt_len = (__u32)(data_end - data);
 
     /* Parse Ethernet */
     struct ethhdr *eth = (struct ethhdr *)data;
@@ -216,7 +217,7 @@ int layer4_prog(struct xdp_md *ctx)
             STAT_INC(STAT_DROP_L4_NO_META);
             return XDP_DROP;
         }
-        return get_default_action(m);
+        return get_default_action(m, pkt_len);
     }
 
     /* Read metadata from data_meta area */
@@ -240,26 +241,26 @@ int layer4_prog(struct xdp_md *ctx)
         rule = bpf_map_lookup_elem(&l4_rules_1, &mkey);
 
     if (!rule)
-        return get_default_action(meta);
+        return get_default_action(meta, pkt_len);
 
     /* Secondary filter: TCP flags bitmask check.
      * If rule specifies flags constraints but packet doesn't match,
      * treat as no-match and fall through to default action. */
     if (rule->tcp_flags_set || rule->tcp_flags_unset) {
         if ((tcp_flags & rule->tcp_flags_set) != rule->tcp_flags_set)
-            return get_default_action(meta);
+            return get_default_action(meta, pkt_len);
         if (tcp_flags & rule->tcp_flags_unset)
-            return get_default_action(meta);
+            return get_default_action(meta, pkt_len);
     }
 
     switch (rule->action) {
     case ACT_ALLOW:
-        STAT_INC(STAT_PASS_L4);
+        STAT_COUNT(STAT_PASS_L4, pkt_len);
         BPF_DBG("L4: rule %d proto=%d port=%d → ALLOW", rule->rule_id, proto, dst_port);
         return XDP_PASS;
 
     case ACT_DROP:
-        STAT_INC(STAT_DROP_L4_RULE);
+        STAT_COUNT(STAT_DROP_L4_RULE, pkt_len);
         BPF_DBG("L4: rule %d proto=%d port=%d → DROP", rule->rule_id, proto, dst_port);
         return XDP_DROP;
 
@@ -267,17 +268,15 @@ int layer4_prog(struct xdp_md *ctx)
         meta->action_flags |= (1 << ACT_TAG);
         meta->dscp = rule->dscp;
         meta->cos  = rule->cos;
-        STAT_INC(STAT_TAG);
+        STAT_COUNT(STAT_TAG, pkt_len);
         BPF_DBG("L4: rule %d → TAG dscp=%d", rule->rule_id, rule->dscp);
         return XDP_PASS;
 
-    case ACT_RATE_LIMIT: {
-        __u32 pkt_len = (__u32)(data_end - data);
+    case ACT_RATE_LIMIT:
         return do_rate_limit(rule, pkt_len);
-    }
 
     default:
-        STAT_INC(STAT_DROP_L4_RULE);
+        STAT_COUNT(STAT_DROP_L4_RULE, pkt_len);
         return XDP_DROP;
     }
 }

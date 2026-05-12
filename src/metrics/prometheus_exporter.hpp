@@ -243,37 +243,70 @@ private:
         ::send(fd, body.data(), body.size(), MSG_NOSIGNAL);
     }
 
+    /// Read a percpu u64 array map into a packed totals array.
+    void sum_percpu(int fd, std::array<uint64_t, STAT__MAX>& out, int ncpus,
+                    std::vector<uint64_t>& scratch) {
+        for (uint32_t k = 0; k < STAT__MAX; k++) {
+            if (bpf_map_lookup_elem(fd, &k, scratch.data()) == 0) {
+                for (int c = 0; c < ncpus; c++)
+                    out[k] += scratch[c];
+            }
+        }
+    }
+
+    /// Convert a metric name like "pktgate_drop_total{layer=\"l4\",...}"
+    /// into the parallel byte-counter "pktgate_drop_bytes_total{...}".
+    /// For unlabelled "pktgate_packets_total" produces "pktgate_bytes_total";
+    /// for "pktgate_pass_total{...}" → "pktgate_pass_bytes_total{...}". One pass.
+    static std::string bytes_metric_name(const char* pkt_name) {
+        std::string s = pkt_name;
+        // Special-case the global counter.
+        if (s.starts_with("pktgate_packets_total"))
+            return std::string("pktgate_bytes_total") + s.substr(std::strlen("pktgate_packets_total"));
+        // Otherwise inject "_bytes" before "_total".
+        auto pos = s.find("_total");
+        if (pos != std::string::npos) {
+            s.insert(pos, "_bytes");
+        }
+        return s;
+    }
+
     std::string build_metrics() {
-        int fd = loader_.stats_map_fd();
-        if (fd < 0)
+        int pkts_fd = loader_.stats_map_fd();
+        int bytes_fd = loader_.bytes_map_fd();
+        if (pkts_fd < 0)
             return "# stats_map not available\n";
 
         int ncpus = libbpf_num_possible_cpus();
         if (ncpus <= 0)
             return "# no CPUs detected\n";
 
-        // Read all counters
+        // Read both maps. Bytes map is optional — exporter still emits packet
+        // counters if the bytes map FD is bogus (degrades gracefully).
         std::vector<uint64_t> percpu(ncpus);
-        std::array<uint64_t, STAT__MAX> totals{};
-
-        for (uint32_t k = 0; k < STAT__MAX; k++) {
-            if (bpf_map_lookup_elem(fd, &k, percpu.data()) == 0) {
-                for (int c = 0; c < ncpus; c++)
-                    totals[k] += percpu[c];
-            }
-        }
+        std::array<uint64_t, STAT__MAX> pkts{};
+        std::array<uint64_t, STAT__MAX> bytes{};
+        sum_percpu(pkts_fd, pkts, ncpus, percpu);
+        if (bytes_fd >= 0)
+            sum_percpu(bytes_fd, bytes, ncpus, percpu);
 
         // Format Prometheus text exposition
         std::string out;
-        out.reserve(4096);
+        out.reserve(8192);
 
         // HELP/TYPE headers for metric families
         out += "# HELP pktgate_packets_total Total packets entering XDP pipeline\n";
         out += "# TYPE pktgate_packets_total counter\n";
+        out += "# HELP pktgate_bytes_total Total bytes entering XDP pipeline\n";
+        out += "# TYPE pktgate_bytes_total counter\n";
         out += "# HELP pktgate_drop_total Packets dropped by layer and reason\n";
         out += "# TYPE pktgate_drop_total counter\n";
+        out += "# HELP pktgate_drop_bytes_total Bytes dropped by layer and reason\n";
+        out += "# TYPE pktgate_drop_bytes_total counter\n";
         out += "# HELP pktgate_pass_total Packets passed by layer\n";
         out += "# TYPE pktgate_pass_total counter\n";
+        out += "# HELP pktgate_pass_bytes_total Bytes passed by layer\n";
+        out += "# TYPE pktgate_pass_bytes_total counter\n";
         out += "# HELP pktgate_action_total Action executions by type\n";
         out += "# TYPE pktgate_action_total counter\n";
         out += "# HELP pktgate_tc_total TC ingress actions\n";
@@ -284,7 +317,15 @@ private:
         for (size_t i = 0; i < kNumMetrics; i++) {
             int n = snprintf(line, sizeof(line), "%s %llu\n",
                              kMetrics[i].name,
-                             (unsigned long long)totals[kMetrics[i].key]);
+                             (unsigned long long)pkts[kMetrics[i].key]);
+            out.append(line, n);
+        }
+        // Parallel bytes series — same label structure, different metric family.
+        for (size_t i = 0; i < kNumMetrics; i++) {
+            std::string bname = bytes_metric_name(kMetrics[i].name);
+            int n = snprintf(line, sizeof(line), "%s %llu\n",
+                             bname.c_str(),
+                             (unsigned long long)bytes[kMetrics[i].key]);
             out.append(line, n);
         }
 
