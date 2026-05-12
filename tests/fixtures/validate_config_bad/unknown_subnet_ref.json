@@ -1,0 +1,10 @@
+{
+  "_comment": "src_ip refers to unknown subnet object — validator must reject.",
+  "device_info": { "interface": "eth0" },
+  "pipeline": {
+    "layer_3": [
+      { "rule_id": 1, "match": { "src_ip": "object:does_not_exist" }, "action": "drop" }
+    ]
+  },
+  "default_behavior": "drop"
+}

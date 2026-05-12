@@ -1,0 +1,10 @@
+{
+  "_comment": "L3 rule with no match fields would compile to a 0.0.0.0/0 wildcard; reject.",
+  "device_info": { "interface": "eth0" },
+  "pipeline": {
+    "layer_3": [
+      { "rule_id": 1, "action": "drop" }
+    ]
+  },
+  "default_behavior": "drop"
+}

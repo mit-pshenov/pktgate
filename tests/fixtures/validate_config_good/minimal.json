@@ -1,0 +1,17 @@
+{
+  "_comment": "Minimal valid config: L3-only allow-from-subnet. Used as the positive control in CI.",
+  "device_info": { "interface": "eth0" },
+  "objects": {
+    "subnets": { "client_net": "10.0.0.0/8" }
+  },
+  "pipeline": {
+    "layer_3": [
+      {
+        "rule_id": 1,
+        "match": { "src_ip": "object:client_net" },
+        "action": "allow"
+      }
+    ]
+  },
+  "default_behavior": "drop"
+}

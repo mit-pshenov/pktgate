@@ -122,10 +122,14 @@ add_dependencies(pktgate_lib bpf_programs)
 add_executable(pktgate_ctl src/main.cpp)
 target_link_libraries(pktgate_ctl PRIVATE pktgate_lib)
 
+# ── Offline config validator (no BPF load required) ───────────
+add_executable(validate_config tools/validate_config.cpp)
+target_link_libraries(validate_config PRIVATE pktgate_lib)
+
 # ── Install targets ───────────────────────────────────────────
 include(GNUInstallDirs)
 
-install(TARGETS pktgate_ctl RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS pktgate_ctl validate_config RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES systemd/pktgate.service
     DESTINATION lib/systemd/system)
 install(FILES sample2.json
@@ -295,11 +299,40 @@ set_tests_properties(bpf_dataplane PROPERTIES
     SKIP_RETURN_CODE 77
 )
 
+# ── validate_config fixture tests ────────────────────────────
+# Positive: the minimal valid config must pass.
+add_test(NAME validate_config_good
+    COMMAND validate_config
+        ${CMAKE_SOURCE_DIR}/tests/fixtures/validate_config_good/minimal.json
+)
+
+# Negative: each known-bad fixture must be rejected (exit non-zero).
+# Use WILL_FAIL so the test passes when the tool correctly refuses the config.
+add_test(NAME validate_config_bad_dst_ip
+    COMMAND validate_config
+        ${CMAKE_SOURCE_DIR}/tests/fixtures/validate_config_bad/dst_ip_wildcard.json
+)
+set_tests_properties(validate_config_bad_dst_ip PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME validate_config_bad_empty_l3
+    COMMAND validate_config
+        ${CMAKE_SOURCE_DIR}/tests/fixtures/validate_config_bad/empty_l3_match.json
+)
+set_tests_properties(validate_config_bad_empty_l3 PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME validate_config_bad_unknown_ref
+    COMMAND validate_config
+        ${CMAKE_SOURCE_DIR}/tests/fixtures/validate_config_bad/unknown_subnet_ref.json
+)
+set_tests_properties(validate_config_bad_unknown_ref PROPERTIES WILL_FAIL TRUE)
+
 # ── Test labels for selective runs (ctest -L unit) ───────────
 set_tests_properties(
     config_parser object_compiler generation_logic net_types
     config_validation rule_compiler_edge config_validator
     byte_layout packet_builder ipv6 fault_injection prometheus
+    validate_config_good validate_config_bad_dst_ip
+    validate_config_bad_empty_l3 validate_config_bad_unknown_ref
     PROPERTIES LABELS "unit"
 )
 set_tests_properties(
