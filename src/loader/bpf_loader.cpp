@@ -83,16 +83,10 @@ std::expected<void, std::string> BpfLoader::load() {
         REUSE_MAP(gen_config);
         REUSE_MAP(prog_array_0);
         REUSE_MAP(prog_array_1);
-        REUSE_MAP(l2_src_mac_0);
-        REUSE_MAP(l2_src_mac_1);
-        REUSE_MAP(l2_dst_mac_0);
-        REUSE_MAP(l2_dst_mac_1);
-        REUSE_MAP(l2_ethertype_0);
-        REUSE_MAP(l2_ethertype_1);
-        REUSE_MAP(l2_vlan_0);
-        REUSE_MAP(l2_vlan_1);
-        REUSE_MAP(l2_pcp_0);
-        REUSE_MAP(l2_pcp_1);
+        REUSE_MAP(l2_rules_0);
+        REUSE_MAP(l2_rules_1);
+        REUSE_MAP(l2_active_masks_0);
+        REUSE_MAP(l2_active_masks_1);
         REUSE_MAP(subnet_rules_0);
         REUSE_MAP(subnet_rules_1);
         REUSE_MAP(subnet6_rules_0);
@@ -266,39 +260,18 @@ void BpfLoader::detach_tc() {
 }
 
 // Map FD accessors
-int BpfLoader::l2_src_mac_fd(uint32_t gen) const {
+int BpfLoader::l2_rules_fd(uint32_t gen) const {
     if (!impl_->entry) return -1;
     return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.l2_src_mac_0)
-        : bpf_map__fd(impl_->entry->maps.l2_src_mac_1);
+        ? bpf_map__fd(impl_->entry->maps.l2_rules_0)
+        : bpf_map__fd(impl_->entry->maps.l2_rules_1);
 }
 
-int BpfLoader::l2_dst_mac_fd(uint32_t gen) const {
+int BpfLoader::l2_active_masks_fd(uint32_t gen) const {
     if (!impl_->entry) return -1;
     return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.l2_dst_mac_0)
-        : bpf_map__fd(impl_->entry->maps.l2_dst_mac_1);
-}
-
-int BpfLoader::l2_ethertype_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.l2_ethertype_0)
-        : bpf_map__fd(impl_->entry->maps.l2_ethertype_1);
-}
-
-int BpfLoader::l2_vlan_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.l2_vlan_0)
-        : bpf_map__fd(impl_->entry->maps.l2_vlan_1);
-}
-
-int BpfLoader::l2_pcp_fd(uint32_t gen) const {
-    if (!impl_->entry) return -1;
-    return gen == 0
-        ? bpf_map__fd(impl_->entry->maps.l2_pcp_0)
-        : bpf_map__fd(impl_->entry->maps.l2_pcp_1);
+        ? bpf_map__fd(impl_->entry->maps.l2_active_masks_0)
+        : bpf_map__fd(impl_->entry->maps.l2_active_masks_1);
 }
 
 int BpfLoader::subnet_rules_fd(uint32_t gen) const {

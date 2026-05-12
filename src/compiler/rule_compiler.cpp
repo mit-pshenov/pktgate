@@ -4,6 +4,7 @@
 #include <bpf/libbpf.h>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace pktgate::compiler {
 
@@ -115,7 +116,12 @@ compile_rules(const config::Pipeline& pipeline,
     result.l4_rules.reserve(l4_estimate);
 
     try {
-        // Compile Layer 2 rules
+        // ── Layer 2 ─────────────────────────────────────────────
+        // One composite key per (rule × resolved MAC). filter_mask names the
+        // fields constrained by the rule; other fields stay zero. The BPF
+        // data plane iterates the active-mask set and projects parsed packet
+        // fields through each mask to compute the lookup key. See
+        // _fixes/02_l2_single_dispatch.md.
         for (auto& rule : pipeline.layer_2) {
             struct l2_rule base{};
             base.rule_id = rule.rule_id;
@@ -127,79 +133,54 @@ compile_rules(const config::Pipeline& pipeline,
             if (rule.action == config::Action::Mirror && rule.params.target_port)
                 base.mirror_ifindex = resolver(*rule.params.target_port);
 
-            // Determine primary field by selectivity:
-            // src_mac > dst_mac > vlan_id > ethertype > pcp
-            L2MatchType primary;
-            if (rule.match.src_mac)
-                primary = L2MatchType::SrcMac;
-            else if (rule.match.dst_mac)
-                primary = L2MatchType::DstMac;
-            else if (rule.match.vlan_id)
-                primary = L2MatchType::Vlan;
-            else if (rule.match.ethertype)
-                primary = L2MatchType::Ethertype;
-            else if (rule.match.pcp)
-                primary = L2MatchType::Pcp;
-            else
+            // Build the non-MAC portion of the composite key once per rule.
+            uint8_t  mask = 0;
+            uint16_t kvlan = 0;
+            uint16_t kether_nbo = 0;
+            uint8_t  kpcp = 0;
+            if (rule.match.ethertype) {
+                mask |= FILTER_MASK_ETHERTYPE;
+                kether_nbo = htons(config::parse_ethertype(*rule.match.ethertype));
+            }
+            if (rule.match.vlan_id) {
+                mask |= FILTER_MASK_VLAN;
+                kvlan = *rule.match.vlan_id;
+            }
+            if (rule.match.pcp) {
+                mask |= FILTER_MASK_PCP;
+                kpcp = *rule.match.pcp;
+            }
+            if (rule.match.src_mac) mask |= FILTER_MASK_SRCMAC;
+            if (rule.match.dst_mac) mask |= FILTER_MASK_DSTMAC;
+
+            if (mask == 0)
                 continue; // no match fields — validator should have caught this
 
-            // Build secondary filter mask + values
-            uint8_t filter_mask = 0;
-            if (rule.match.ethertype && primary != L2MatchType::Ethertype) {
-                filter_mask |= L2_FILTER_ETHERTYPE;
-                base.filter_ethertype = htons(config::parse_ethertype(*rule.match.ethertype));
-            }
-            if (rule.match.vlan_id && primary != L2MatchType::Vlan) {
-                filter_mask |= L2_FILTER_VLAN;
-                base.filter_vlan_id = *rule.match.vlan_id;
-            }
-            if (rule.match.pcp && primary != L2MatchType::Pcp) {
-                filter_mask |= L2_FILTER_PCP;
-                base.filter_pcp = *rule.match.pcp;
-            }
-            base.filter_mask = filter_mask;
+            // Resolve MAC object groups. Cross-product when both src and dst
+            // MAC are constrained — closes P1 #3.
+            std::vector<util::MacAddr> src_macs, dst_macs;
+            if (rule.match.src_mac)
+                src_macs = resolve_object_macs(*rule.match.src_mac, objects);
+            if (rule.match.dst_mac)
+                dst_macs = resolve_object_macs(*rule.match.dst_mac, objects);
+            if (src_macs.empty()) src_macs.push_back(util::MacAddr{});  // placeholder, src bit will be 0
+            if (dst_macs.empty()) dst_macs.push_back(util::MacAddr{});
 
-            // Emit compiled entries (MAC types expand object groups)
-            auto emit_entry = [&](L2MatchType type) {
-                if (type == L2MatchType::SrcMac) {
-                    auto macs = resolve_object_macs(*rule.match.src_mac, objects);
-                    for (auto& mac : macs) {
-                        CompiledL2Rule cr{};
-                        cr.type = L2MatchType::SrcMac;
-                        std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
-                        cr.rule = base;
-                        result.l2_rules.push_back(cr);
-                    }
-                } else if (type == L2MatchType::DstMac) {
-                    auto macs = resolve_object_macs(*rule.match.dst_mac, objects);
-                    for (auto& mac : macs) {
-                        CompiledL2Rule cr{};
-                        cr.type = L2MatchType::DstMac;
-                        std::memcpy(cr.mac.addr, mac.bytes.data(), 6);
-                        cr.rule = base;
-                        result.l2_rules.push_back(cr);
-                    }
-                } else if (type == L2MatchType::Ethertype) {
+            for (auto& sm : src_macs) {
+                for (auto& dm : dst_macs) {
                     CompiledL2Rule cr{};
-                    cr.type = L2MatchType::Ethertype;
-                    cr.ether.ethertype = htons(config::parse_ethertype(*rule.match.ethertype));
-                    cr.rule = base;
-                    result.l2_rules.push_back(cr);
-                } else if (type == L2MatchType::Vlan) {
-                    CompiledL2Rule cr{};
-                    cr.type = L2MatchType::Vlan;
-                    cr.vlan.vlan_id = *rule.match.vlan_id;
-                    cr.rule = base;
-                    result.l2_rules.push_back(cr);
-                } else if (type == L2MatchType::Pcp) {
-                    CompiledL2Rule cr{};
-                    cr.type = L2MatchType::Pcp;
-                    cr.pcp.pcp = *rule.match.pcp;
+                    cr.key.filter_mask = mask;
+                    cr.key.pcp         = kpcp;
+                    cr.key.ethertype   = kether_nbo;
+                    cr.key.vlan_id     = kvlan;
+                    if (mask & FILTER_MASK_SRCMAC)
+                        std::memcpy(cr.key.src_mac, sm.bytes.data(), 6);
+                    if (mask & FILTER_MASK_DSTMAC)
+                        std::memcpy(cr.key.dst_mac, dm.bytes.data(), 6);
                     cr.rule = base;
                     result.l2_rules.push_back(cr);
                 }
-            };
-            emit_entry(primary);
+            }
         }
 
         // Compile Layer 3 rules
@@ -306,63 +287,27 @@ compile_rules(const config::Pipeline& pipeline,
 
     // ── Detect map key collisions ──────────────────────────────
 
-    // L2: duplicate keys within each match type
+    // L2: composite key collision. Two rules sharing the exact same l2_key
+    // (same mask + same projected fields) can't coexist in the HASH map. Also
+    // enforce the MAX_L2_MASKS bound here so the BPF iteration matches.
     {
-        // src_mac collisions
-        std::unordered_map<std::string, uint32_t> src_seen, dst_seen;
-        std::unordered_map<uint16_t, uint32_t> ether_seen, vlan_seen;
-        std::unordered_map<uint32_t, uint32_t> pcp_seen;
-
+        std::unordered_map<std::string, uint32_t> seen;
+        std::unordered_set<uint8_t> distinct_masks;
         for (auto& cr : result.l2_rules) {
-            std::string mac_str(reinterpret_cast<const char*>(cr.mac.addr), 6);
-            switch (cr.type) {
-            case L2MatchType::SrcMac: {
-                auto [it, ok] = src_seen.emplace(mac_str, cr.rule.rule_id);
-                if (!ok)
-                    return std::unexpected(
-                        "L2 src_mac key collision: same MAC used by rule " +
-                        std::to_string(it->second) + " and rule " +
-                        std::to_string(cr.rule.rule_id));
-                break;
-            }
-            case L2MatchType::DstMac: {
-                auto [it, ok] = dst_seen.emplace(mac_str, cr.rule.rule_id);
-                if (!ok)
-                    return std::unexpected(
-                        "L2 dst_mac key collision: same MAC used by rule " +
-                        std::to_string(it->second) + " and rule " +
-                        std::to_string(cr.rule.rule_id));
-                break;
-            }
-            case L2MatchType::Ethertype: {
-                auto [it, ok] = ether_seen.emplace(cr.ether.ethertype, cr.rule.rule_id);
-                if (!ok)
-                    return std::unexpected(
-                        "L2 ethertype key collision: same ethertype used by rule " +
-                        std::to_string(it->second) + " and rule " +
-                        std::to_string(cr.rule.rule_id));
-                break;
-            }
-            case L2MatchType::Vlan: {
-                auto [it, ok] = vlan_seen.emplace(cr.vlan.vlan_id, cr.rule.rule_id);
-                if (!ok)
-                    return std::unexpected(
-                        "L2 vlan key collision: same vlan_id used by rule " +
-                        std::to_string(it->second) + " and rule " +
-                        std::to_string(cr.rule.rule_id));
-                break;
-            }
-            case L2MatchType::Pcp: {
-                auto [it, ok] = pcp_seen.emplace(cr.pcp.pcp, cr.rule.rule_id);
-                if (!ok)
-                    return std::unexpected(
-                        "L2 pcp key collision: same PCP used by rule " +
-                        std::to_string(it->second) + " and rule " +
-                        std::to_string(cr.rule.rule_id));
-                break;
-            }
-            }
+            distinct_masks.insert(cr.key.filter_mask);
+            std::string blob(reinterpret_cast<const char*>(&cr.key), sizeof(cr.key));
+            auto [it, ok] = seen.emplace(std::move(blob), cr.rule.rule_id);
+            if (!ok)
+                return std::unexpected(
+                    "L2 key collision: same composite key claimed by rule " +
+                    std::to_string(it->second) + " and rule " +
+                    std::to_string(cr.rule.rule_id));
         }
+        if (distinct_masks.size() > MAX_L2_MASKS)
+            return std::unexpected(
+                "L2 has " + std::to_string(distinct_masks.size()) +
+                " distinct filter-mask combinations, exceeds MAX_L2_MASKS=" +
+                std::to_string(MAX_L2_MASKS));
     }
 
     // L4: duplicate protocol+port → last-write-wins in BPF hash map

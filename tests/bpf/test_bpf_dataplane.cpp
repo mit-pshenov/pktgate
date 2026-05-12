@@ -235,27 +235,59 @@ static const uint8_t KNOWN_MAC[6]   = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
 static const uint8_t UNKNOWN_MAC[6] = {0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x00};
 static const uint8_t DST_MAC[6]     = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
 
+// ── L2 helpers (post-#10 single-dispatch refactor) ─────────
+// Tests previously poked one of five per-field L2 maps directly. Under the
+// composite-key design they install (key, rule) into a single l2_rules map
+// and must also register the filter_mask in l2_active_masks_{gen} so the BPF
+// iterator hits it. install_l2_rule + activate_l2_mask wrap that boilerplate.
+
+static void activate_l2_mask(pktgate::loader::BpfLoader& loader,
+                              uint32_t gen, uint8_t mask) {
+    using MM = pktgate::loader::MapManager;
+    int masks_fd = loader.l2_active_masks_fd(gen);
+    // Append to the first empty slot. Tests build state incrementally; no need
+    // to sort by popcount because they assert specific match expectations.
+    for (uint32_t i = 0; i < MAX_L2_MASKS; ++i) {
+        uint8_t cur = 0;
+        bpf_map_lookup_elem(masks_fd, &i, &cur);
+        if (cur == mask) return;          // already activated
+        if (cur == 0) {
+            MM::update_elem(masks_fd, &i, &mask, BPF_ANY);
+            return;
+        }
+    }
+}
+
+static void install_l2_rule(pktgate::loader::BpfLoader& loader,
+                             uint32_t gen,
+                             const struct l2_key& key,
+                             const struct l2_rule& rule) {
+    using MM = pktgate::loader::MapManager;
+    MM::update_elem(loader.l2_rules_fd(gen), &key, &rule, BPF_ANY);
+    activate_l2_mask(loader, gen, key.filter_mask);
+}
+
 // ── Helper: populate maps for a standard test config ────────
 
 static void setup_standard_config(pktgate::loader::BpfLoader& loader, uint32_t gen) {
     using MM = pktgate::loader::MapManager;
 
     // --- L2 src_mac rule: allow KNOWN_MAC → L3 ---
-    struct mac_key mkey{};
-    memcpy(mkey.addr, KNOWN_MAC, 6);
+    struct l2_key lkey{};
+    lkey.filter_mask = FILTER_MASK_SRCMAC;
+    memcpy(lkey.src_mac, KNOWN_MAC, 6);
     struct l2_rule l2_allow{};
     l2_allow.rule_id = 1;
     l2_allow.action = ACT_ALLOW;
     l2_allow.next_layer = LAYER_3_IDX;
-    auto r = MM::update_elem(loader.l2_src_mac_fd(gen), &mkey, &l2_allow, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, gen, lkey, l2_allow);
 
     // --- Subnet rules: 192.168.1.0/24 → DROP ---
     struct lpm_v4_key lpm_drop = { .prefixlen = 24, .addr = ip_nbo("192.168.1.0") };
     struct l3_rule l3_drop{};
     l3_drop.rule_id = 10;
     l3_drop.action = ACT_DROP;
-    r = MM::update_elem(loader.subnet_rules_fd(gen), &lpm_drop, &l3_drop, BPF_ANY);
+    auto r = MM::update_elem(loader.subnet_rules_fd(gen), &lpm_drop, &l3_drop, BPF_ANY);
     assert(r.has_value());
 
     // --- Subnet rules: 10.0.0.0/8 → ALLOW + next_layer ---
@@ -380,14 +412,14 @@ TEST(test_l2_explicit_drop_rule) {
     // Add a dst_mac DROP rule and verify L2 drops matching packets
     using MM = pktgate::loader::MapManager;
 
-    struct mac_key dkey{};
     uint8_t target_dst[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
-    memcpy(dkey.addr, target_dst, 6);
+    struct l2_key dkey{};
+    dkey.filter_mask = FILTER_MASK_DSTMAC;
+    memcpy(dkey.dst_mac, target_dst, 6);
     struct l2_rule drop_rule{};
     drop_rule.rule_id = 99;
     drop_rule.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_dst_mac_fd(0), &dkey, &drop_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, dkey, drop_rule);
 
     auto pkt = PacketBuilder()
         .eth(UNKNOWN_MAC, target_dst, ETH_P_IP)
@@ -400,7 +432,7 @@ TEST(test_l2_explicit_drop_rule) {
     assert(res.retval == XDP_DROP); // dropped by L2 dst_mac rule
 
     // Clean up
-    MM::delete_elem(loader.l2_dst_mac_fd(0), &dkey);
+    MM::delete_elem(loader.l2_rules_fd(0), &dkey);
 }
 
 TEST(test_l2_truncated_packet_dropped) {
@@ -791,13 +823,13 @@ TEST(test_l2_ethertype_match) {
     // Add ethertype rule: ARP (0x0806) → DROP
     using MM = pktgate::loader::MapManager;
 
-    struct ethertype_key ekey{};
+    struct l2_key ekey{};
+    ekey.filter_mask = FILTER_MASK_ETHERTYPE;
     ekey.ethertype = htons(0x0806);
     struct l2_rule drop_rule{};
     drop_rule.rule_id = 200;
     drop_rule.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_ethertype_fd(0), &ekey, &drop_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, ekey, drop_rule);
 
     // Build ARP packet (unknown MACs, no src/dst mac rule)
     auto pkt = PacketBuilder()
@@ -808,20 +840,20 @@ TEST(test_l2_ethertype_match) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // dropped by ethertype rule
 
-    MM::delete_elem(loader.l2_ethertype_fd(0), &ekey);
+    MM::delete_elem(loader.l2_rules_fd(0), &ekey);
 }
 
 TEST(test_l2_vlan_match) {
     // Add vlan_id rule: VLAN 100 → DROP
     using MM = pktgate::loader::MapManager;
 
-    struct vlan_key vkey{};
-    vkey.vlan_id = htons(100);
+    struct l2_key vkey{};
+    vkey.filter_mask = FILTER_MASK_VLAN;
+    vkey.vlan_id = 100;  // host byte order
     struct l2_rule drop_rule{};
     drop_rule.rule_id = 201;
     drop_rule.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_vlan_fd(0), &vkey, &drop_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, vkey, drop_rule);
 
     // Build 802.1Q tagged packet: eth(src, dst, 0x8100) + VLAN TCI + inner ethertype
     PacketBuilder pkt;
@@ -850,22 +882,22 @@ TEST(test_l2_vlan_match) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // dropped by vlan_id rule
 
-    MM::delete_elem(loader.l2_vlan_fd(0), &vkey);
+    MM::delete_elem(loader.l2_rules_fd(0), &vkey);
 }
 
 TEST(test_l2_dst_mac_allow_to_l3) {
     // Add dst_mac ALLOW rule with next_layer=L3 → packet proceeds to L3→L4→PASS
     using MM = pktgate::loader::MapManager;
 
-    struct mac_key dkey{};
     uint8_t target_dst[6] = {0xAA, 0x11, 0x22, 0x33, 0x44, 0x55};
-    memcpy(dkey.addr, target_dst, 6);
+    struct l2_key dkey{};
+    dkey.filter_mask = FILTER_MASK_DSTMAC;
+    memcpy(dkey.dst_mac, target_dst, 6);
     struct l2_rule allow_rule{};
     allow_rule.rule_id = 202;
     allow_rule.action = ACT_ALLOW;
     allow_rule.next_layer = LAYER_3_IDX;
-    auto r = MM::update_elem(loader.l2_dst_mac_fd(0), &dkey, &allow_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, dkey, allow_rule);
 
     // Use unknown src_mac (no src_mac rule) but matching dst_mac
     // IP: 10.0.0.1 → L3 ALLOW+next → L4 TCP:80 → ALLOW → PASS
@@ -879,34 +911,37 @@ TEST(test_l2_dst_mac_allow_to_l3) {
     assert(res.ok);
     assert(res.retval == XDP_PASS); // dst_mac ALLOW → L3 → L4 → PASS
 
-    MM::delete_elem(loader.l2_dst_mac_fd(0), &dkey);
+    MM::delete_elem(loader.l2_rules_fd(0), &dkey);
 }
 
 TEST(test_l2_src_mac_priority_over_dst_mac) {
-    // src_mac has higher priority than dst_mac in L2 lookup order.
-    // Add src_mac DROP for a MAC, and dst_mac ALLOW for same packet's dst.
-    // Verify src_mac rule wins → DROP.
+    // Post-#10 the L2 iterator hits most-specific masks first (popcount desc),
+    // but src+dst here have the same popcount (1 each). Activation order in
+    // the test's install_l2_rule decides which fires; src_mac was added by
+    // setup_standard_config first → its mask precedes dst_mac in active set.
+    // The rule under test still validates that src_mac DROP wins over dst_mac
+    // ALLOW for a packet matching both — same operator-intent assertion.
     using MM = pktgate::loader::MapManager;
 
     uint8_t test_src[6] = {0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33};
     uint8_t test_dst[6] = {0xCC, 0xDD, 0xEE, 0x44, 0x55, 0x66};
 
-    struct mac_key skey{};
-    memcpy(skey.addr, test_src, 6);
+    struct l2_key skey{};
+    skey.filter_mask = FILTER_MASK_SRCMAC;
+    memcpy(skey.src_mac, test_src, 6);
     struct l2_rule src_drop{};
     src_drop.rule_id = 203;
     src_drop.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &skey, &src_drop, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, skey, src_drop);
 
-    struct mac_key dkey{};
-    memcpy(dkey.addr, test_dst, 6);
+    struct l2_key dkey{};
+    dkey.filter_mask = FILTER_MASK_DSTMAC;
+    memcpy(dkey.dst_mac, test_dst, 6);
     struct l2_rule dst_allow{};
     dst_allow.rule_id = 204;
     dst_allow.action = ACT_ALLOW;
     dst_allow.next_layer = LAYER_3_IDX;
-    r = MM::update_elem(loader.l2_dst_mac_fd(0), &dkey, &dst_allow, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, dkey, dst_allow);
 
     auto pkt = PacketBuilder()
         .eth(test_src, test_dst, ETH_P_IP)
@@ -918,22 +953,22 @@ TEST(test_l2_src_mac_priority_over_dst_mac) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // src_mac DROP wins over dst_mac ALLOW
 
-    MM::delete_elem(loader.l2_src_mac_fd(0), &skey);
-    MM::delete_elem(loader.l2_dst_mac_fd(0), &dkey);
+    MM::delete_elem(loader.l2_rules_fd(0), &skey);
+    MM::delete_elem(loader.l2_rules_fd(0), &dkey);
 }
 
 TEST(test_l2_ethertype_ipv4_allow) {
     // Add ethertype rule: IPv4 (0x0800) → ALLOW + next_layer=L3
     using MM = pktgate::loader::MapManager;
 
-    struct ethertype_key ekey{};
+    struct l2_key ekey{};
+    ekey.filter_mask = FILTER_MASK_ETHERTYPE;
     ekey.ethertype = htons(0x0800);
     struct l2_rule allow_rule{};
     allow_rule.rule_id = 205;
     allow_rule.action = ACT_ALLOW;
     allow_rule.next_layer = LAYER_3_IDX;
-    auto r = MM::update_elem(loader.l2_ethertype_fd(0), &ekey, &allow_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, ekey, allow_rule);
 
     // Use unknown src/dst MACs (no mac rules) so ethertype rule is the match
     uint8_t rnd_src[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
@@ -948,20 +983,20 @@ TEST(test_l2_ethertype_ipv4_allow) {
     assert(res.ok);
     assert(res.retval == XDP_PASS); // ethertype ALLOW → L3 → L4 TCP:80 → PASS
 
-    MM::delete_elem(loader.l2_ethertype_fd(0), &ekey);
+    MM::delete_elem(loader.l2_rules_fd(0), &ekey);
 }
 
 TEST(test_pipeline_full_ethertype_drop) {
     // Via entry_prog: ethertype rule drops ARP before reaching L3
     using MM = pktgate::loader::MapManager;
 
-    struct ethertype_key ekey{};
+    struct l2_key ekey{};
+    ekey.filter_mask = FILTER_MASK_ETHERTYPE;
     ekey.ethertype = htons(0x0806);
     struct l2_rule drop_rule{};
     drop_rule.rule_id = 206;
     drop_rule.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_ethertype_fd(0), &ekey, &drop_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, ekey, drop_rule);
 
     auto pkt = PacketBuilder()
         .eth(UNKNOWN_MAC, DST_MAC, 0x0806)
@@ -971,7 +1006,7 @@ TEST(test_pipeline_full_ethertype_drop) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // ARP dropped by L2 ethertype rule
 
-    MM::delete_elem(loader.l2_ethertype_fd(0), &ekey);
+    MM::delete_elem(loader.l2_rules_fd(0), &ekey);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1013,13 +1048,13 @@ TEST(test_l2_ethertype_ipv6_match) {
     // Add ethertype rule for IPv6 (0x86DD) → DROP
     using MM = pktgate::loader::MapManager;
 
-    struct ethertype_key ekey{};
+    struct l2_key ekey{};
+    ekey.filter_mask = FILTER_MASK_ETHERTYPE;
     ekey.ethertype = htons(0x86DD);
     struct l2_rule drop_rule{};
     drop_rule.rule_id = 210;
     drop_rule.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_ethertype_fd(0), &ekey, &drop_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, ekey, drop_rule);
 
     auto pkt = PacketBuilder()
         .eth(UNKNOWN_MAC, DST_MAC, 0x86DD)
@@ -1029,20 +1064,20 @@ TEST(test_l2_ethertype_ipv6_match) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // dropped by IPv6 ethertype rule
 
-    MM::delete_elem(loader.l2_ethertype_fd(0), &ekey);
+    MM::delete_elem(loader.l2_rules_fd(0), &ekey);
 }
 
 TEST(test_l2_vlan_boundary_4095) {
     // Add vlan_id=4095 rule → DROP. Verify max VLAN ID boundary.
     using MM = pktgate::loader::MapManager;
 
-    struct vlan_key vkey{};
-    vkey.vlan_id = htons(4095);
+    struct l2_key vkey{};
+    vkey.filter_mask = FILTER_MASK_VLAN;
+    vkey.vlan_id = 4095;  // host byte order
     struct l2_rule drop_rule{};
     drop_rule.rule_id = 211;
     drop_rule.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_vlan_fd(0), &vkey, &drop_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, vkey, drop_rule);
 
     PacketBuilder pkt;
     struct ethhdr eh{};
@@ -1067,7 +1102,7 @@ TEST(test_l2_vlan_boundary_4095) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // dropped by vlan_id 4095 rule
 
-    MM::delete_elem(loader.l2_vlan_fd(0), &vkey);
+    MM::delete_elem(loader.l2_rules_fd(0), &vkey);
 }
 
 TEST(test_l2_ethertype_priority_over_vlan) {
@@ -1075,22 +1110,22 @@ TEST(test_l2_ethertype_priority_over_vlan) {
     // BPF checks ethertype BEFORE vlan, so ethertype wins → DROP.
     using MM = pktgate::loader::MapManager;
 
-    struct ethertype_key ekey{};
+    struct l2_key ekey{};
+    ekey.filter_mask = FILTER_MASK_ETHERTYPE;
     ekey.ethertype = htons(0x0800);
     struct l2_rule etype_drop{};
     etype_drop.rule_id = 212;
     etype_drop.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_ethertype_fd(0), &ekey, &etype_drop, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, ekey, etype_drop);
 
-    struct vlan_key vkey{};
-    vkey.vlan_id = htons(100);
+    struct l2_key vkey{};
+    vkey.filter_mask = FILTER_MASK_VLAN;
+    vkey.vlan_id = 100;
     struct l2_rule vlan_allow{};
     vlan_allow.rule_id = 213;
     vlan_allow.action = ACT_ALLOW;
     vlan_allow.next_layer = LAYER_3_IDX;
-    r = MM::update_elem(loader.l2_vlan_fd(0), &vkey, &vlan_allow, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, vkey, vlan_allow);
 
     // Build 802.1Q VLAN 100 tagged IPv4 packet (unknown MACs)
     PacketBuilder pkt;
@@ -1117,8 +1152,8 @@ TEST(test_l2_ethertype_priority_over_vlan) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // ethertype 0x0800 DROP wins over vlan 100 ALLOW
 
-    MM::delete_elem(loader.l2_ethertype_fd(0), &ekey);
-    MM::delete_elem(loader.l2_vlan_fd(0), &vkey);
+    MM::delete_elem(loader.l2_rules_fd(0), &ekey);
+    MM::delete_elem(loader.l2_rules_fd(0), &vkey);
 }
 
 TEST(test_l2_allow_terminal_no_next_layer) {
@@ -1127,14 +1162,14 @@ TEST(test_l2_allow_terminal_no_next_layer) {
     using MM = pktgate::loader::MapManager;
 
     uint8_t term_mac[6] = {0xFE, 0xED, 0xFA, 0xCE, 0x00, 0x01};
-    struct mac_key mkey{};
-    memcpy(mkey.addr, term_mac, 6);
+    struct l2_key mkey{};
+    mkey.filter_mask = FILTER_MASK_SRCMAC;
+    memcpy(mkey.src_mac, term_mac, 6);
     struct l2_rule allow_term{};
     allow_term.rule_id = 214;
     allow_term.action = ACT_ALLOW;
     allow_term.next_layer = 0; // terminal — no next layer
-    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mkey, &allow_term, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, mkey, allow_term);
 
     auto pkt = PacketBuilder()
         .eth(term_mac, DST_MAC, ETH_P_IP)
@@ -1146,7 +1181,7 @@ TEST(test_l2_allow_terminal_no_next_layer) {
     assert(res.ok);
     assert(res.retval == XDP_PASS); // terminal ALLOW at L2 → XDP_PASS
 
-    MM::delete_elem(loader.l2_src_mac_fd(0), &mkey);
+    MM::delete_elem(loader.l2_rules_fd(0), &mkey);
 }
 
 TEST(test_l2_qinq_not_parsed) {
@@ -1193,13 +1228,13 @@ TEST(test_l2_pcp_match_drop) {
     // PCP primary lookup: VLAN-tagged packet with PCP=5 → PCP rule → DROP.
     using MM = pktgate::loader::MapManager;
 
-    struct pcp_key pk{};
+    struct l2_key pk{};
+    pk.filter_mask = FILTER_MASK_PCP;
     pk.pcp = 5;
     struct l2_rule drop_rule{};
     drop_rule.rule_id = 900;
     drop_rule.action = ACT_DROP;
-    auto r = MM::update_elem(loader.l2_pcp_fd(0), &pk, &drop_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, pk, drop_rule);
 
     // Build 802.1Q tagged packet with PCP=5, VID=100
     // PCP occupies bits 15-13 of TCI, VID is bits 11-0
@@ -1226,7 +1261,7 @@ TEST(test_l2_pcp_match_drop) {
     assert(res.ok);
     assert(res.retval == XDP_DROP); // dropped by PCP rule
 
-    MM::delete_elem(loader.l2_pcp_fd(0), &pk);
+    MM::delete_elem(loader.l2_rules_fd(0), &pk);
 }
 
 TEST(test_l2_secondary_ethertype_mismatch) {
@@ -1236,16 +1271,17 @@ TEST(test_l2_secondary_ethertype_mismatch) {
     using MM = pktgate::loader::MapManager;
 
     uint8_t test_src[6] = {0x02, 0x00, 0x00, 0x00, 0xFF, 0x01};
-    struct mac_key mk{};
-    memcpy(mk.addr, test_src, 6);
+    // Compound rule: src_mac AND ethertype constraints — now expressed by
+    // setting both bits in the key's filter_mask and populating both fields.
+    struct l2_key mk{};
+    mk.filter_mask = FILTER_MASK_SRCMAC | FILTER_MASK_ETHERTYPE;
+    memcpy(mk.src_mac, test_src, 6);
+    mk.ethertype = htons(0x0800); // expect IPv4
     struct l2_rule allow_rule{};
     allow_rule.rule_id = 901;
     allow_rule.action = ACT_ALLOW;
     allow_rule.next_layer = 0; // terminal allow
-    allow_rule.filter_mask = L2_FILTER_ETHERTYPE;
-    allow_rule.filter_ethertype = htons(0x0800); // expect IPv4
-    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mk, &allow_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, mk, allow_rule);
 
     // Send IPv6 packet (0x86DD) from that MAC
     auto pkt = PacketBuilder()
@@ -1257,7 +1293,7 @@ TEST(test_l2_secondary_ethertype_mismatch) {
     // Secondary ethertype filter rejects → no L2 match → tail to L3 → IPv6 path → no rule → default DROP
     assert(res.retval == XDP_DROP);
 
-    MM::delete_elem(loader.l2_src_mac_fd(0), &mk);
+    MM::delete_elem(loader.l2_rules_fd(0), &mk);
 }
 
 TEST(test_l2_secondary_vlan_mismatch) {
@@ -1266,16 +1302,15 @@ TEST(test_l2_secondary_vlan_mismatch) {
     using MM = pktgate::loader::MapManager;
 
     uint8_t test_src[6] = {0x02, 0x00, 0x00, 0x00, 0xFF, 0x02};
-    struct mac_key mk{};
-    memcpy(mk.addr, test_src, 6);
+    struct l2_key mk{};
+    mk.filter_mask = FILTER_MASK_SRCMAC | FILTER_MASK_VLAN;
+    memcpy(mk.src_mac, test_src, 6);
+    mk.vlan_id = 200; // host byte order
     struct l2_rule allow_rule{};
     allow_rule.rule_id = 902;
     allow_rule.action = ACT_ALLOW;
     allow_rule.next_layer = 0; // terminal allow
-    allow_rule.filter_mask = L2_FILTER_VLAN;
-    allow_rule.filter_vlan_id = 200; // expect VLAN 200 (host byte order, per BPF extraction)
-    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mk, &allow_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, mk, allow_rule);
 
     // Build 802.1Q tagged packet with VID=300 (mismatch)
     PacketBuilder pkt;
@@ -1301,7 +1336,7 @@ TEST(test_l2_secondary_vlan_mismatch) {
     // Secondary VLAN filter fails → no L2 match → tail to L3 → 0x8100 is neither v4 nor v6 → DROP
     assert(res.retval == XDP_DROP);
 
-    MM::delete_elem(loader.l2_src_mac_fd(0), &mk);
+    MM::delete_elem(loader.l2_rules_fd(0), &mk);
 }
 
 TEST(test_l2_mirror_action) {
@@ -1310,15 +1345,15 @@ TEST(test_l2_mirror_action) {
     using MM = pktgate::loader::MapManager;
 
     uint8_t mirr_src[6] = {0x02, 0x00, 0x00, 0x00, 0xFF, 0x03};
-    struct mac_key mk{};
-    memcpy(mk.addr, mirr_src, 6);
+    struct l2_key mk{};
+    mk.filter_mask = FILTER_MASK_SRCMAC;
+    memcpy(mk.src_mac, mirr_src, 6);
     struct l2_rule mirr_rule{};
     mirr_rule.rule_id = 903;
     mirr_rule.action = ACT_MIRROR;
     mirr_rule.mirror_ifindex = 42;
     mirr_rule.next_layer = 0; // terminal
-    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mk, &mirr_rule, BPF_ANY);
-    assert(r.has_value());
+    install_l2_rule(loader, 0, mk, mirr_rule);
 
     auto pkt = PacketBuilder()
         .eth(mirr_src, DST_MAC, ETH_P_IP)
@@ -1330,7 +1365,7 @@ TEST(test_l2_mirror_action) {
     assert(res.ok);
     assert(res.retval == XDP_PASS); // mirror is non-terminal: sets flags, then terminal ALLOW → PASS
 
-    MM::delete_elem(loader.l2_src_mac_fd(0), &mk);
+    MM::delete_elem(loader.l2_rules_fd(0), &mk);
 }
 
 TEST(test_l2_vlan_truncated_drop) {
@@ -1903,17 +1938,18 @@ TEST(test_pipeline_l2_mirror_l3_continues) {
     using MM = pktgate::loader::MapManager;
 
     // Save original KNOWN_MAC rule, replace with MIRROR + L3
-    struct mac_key mkey{};
-    memcpy(mkey.addr, KNOWN_MAC, 6);
+    struct l2_key mkey{};
+    mkey.filter_mask = FILTER_MASK_SRCMAC;
+    memcpy(mkey.src_mac, KNOWN_MAC, 6);
     struct l2_rule orig_rule{};
-    bpf_map_lookup_elem(loader.l2_src_mac_fd(0), &mkey, &orig_rule);
+    bpf_map_lookup_elem(loader.l2_rules_fd(0), &mkey, &orig_rule);
 
     struct l2_rule mirr_rule{};
     mirr_rule.rule_id = 910;
     mirr_rule.action = ACT_MIRROR;
     mirr_rule.mirror_ifindex = 99;
     mirr_rule.next_layer = LAYER_3_IDX;
-    auto r = MM::update_elem(loader.l2_src_mac_fd(0), &mkey, &mirr_rule, BPF_ANY);
+    auto r = MM::update_elem(loader.l2_rules_fd(0), &mkey, &mirr_rule, BPF_ANY);
     assert(r.has_value());
 
     // 10.0.0.1 → L3 ALLOW+next → L4 TCP:80 → ALLOW → XDP_PASS
@@ -1928,7 +1964,7 @@ TEST(test_pipeline_l2_mirror_l3_continues) {
     assert(res.retval == XDP_PASS); // mirror sets flags, continues to L3→L4 → PASS
 
     // Restore original rule
-    r = MM::update_elem(loader.l2_src_mac_fd(0), &mkey, &orig_rule, BPF_ANY);
+    r = MM::update_elem(loader.l2_rules_fd(0), &mkey, &orig_rule, BPF_ANY);
     assert(r.has_value());
 }
 

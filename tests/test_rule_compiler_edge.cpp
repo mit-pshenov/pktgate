@@ -885,9 +885,9 @@ TEST(test_l2_dst_mac_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_DSTMAC);
     uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+    assert(std::memcmp(result->l2_rules[0].key.dst_mac, expected, 6) == 0);
 }
 
 TEST(test_l2_ethertype_compile) {
@@ -902,8 +902,8 @@ TEST(test_l2_ethertype_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
-    assert(result->l2_rules[0].ether.ethertype == htons(0x0800));
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_ETHERTYPE);
+    assert(result->l2_rules[0].key.ethertype == htons(0x0800));
 }
 
 TEST(test_l2_ethertype_hex_compile) {
@@ -918,8 +918,8 @@ TEST(test_l2_ethertype_hex_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
-    assert(result->l2_rules[0].ether.ethertype == htons(0x0806));
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_ETHERTYPE);
+    assert(result->l2_rules[0].key.ethertype == htons(0x0806));
 }
 
 TEST(test_l2_vlan_compile) {
@@ -934,8 +934,8 @@ TEST(test_l2_vlan_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
-    assert(result->l2_rules[0].vlan.vlan_id == 100);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_VLAN);
+    assert(result->l2_rules[0].key.vlan_id == 100);
 }
 
 TEST(test_l2_dst_mac_group_expansion) {
@@ -956,7 +956,7 @@ TEST(test_l2_dst_mac_group_expansion) {
     assert(result.has_value());
     assert(result->l2_rules.size() == 3);
     for (auto& cr : result->l2_rules)
-        assert(cr.type == compiler::L2MatchType::DstMac);
+        assert(cr.key.filter_mask == FILTER_MASK_DSTMAC);
 }
 
 TEST(test_l2_collision_same_src_mac) {
@@ -977,7 +977,7 @@ TEST(test_l2_collision_same_src_mac) {
 
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(!result.has_value());
-    assert(result.error().find("L2 src_mac key collision") != std::string::npos);
+    assert(result.error().find("L2 key collision") != std::string::npos);
     assert(result.error().find("rule 1") != std::string::npos);
     assert(result.error().find("rule 2") != std::string::npos);
 }
@@ -1000,7 +1000,7 @@ TEST(test_l2_collision_same_ethertype) {
 
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(!result.has_value());
-    assert(result.error().find("L2 ethertype key collision") != std::string::npos);
+    assert(result.error().find("L2 key collision") != std::string::npos);
     assert(result.error().find("rule 1") != std::string::npos);
     assert(result.error().find("rule 2") != std::string::npos);
 }
@@ -1023,7 +1023,7 @@ TEST(test_l2_collision_same_vlan) {
 
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(!result.has_value());
-    assert(result.error().find("L2 vlan key collision") != std::string::npos);
+    assert(result.error().find("L2 key collision") != std::string::npos);
     assert(result.error().find("rule 1") != std::string::npos);
     assert(result.error().find("rule 2") != std::string::npos);
 }
@@ -1086,8 +1086,8 @@ TEST(test_l2_ethertype_ipv6_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
-    assert(result->l2_rules[0].ether.ethertype == htons(0x86DD));
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_ETHERTYPE);
+    assert(result->l2_rules[0].key.ethertype == htons(0x86DD));
 }
 
 TEST(test_l2_ethertype_arp_name_compile) {
@@ -1102,8 +1102,8 @@ TEST(test_l2_ethertype_arp_name_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
-    assert(result->l2_rules[0].ether.ethertype == htons(0x0806));
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_ETHERTYPE);
+    assert(result->l2_rules[0].key.ethertype == htons(0x0806));
 }
 
 TEST(test_l2_vlan_zero_compile) {
@@ -1118,8 +1118,8 @@ TEST(test_l2_vlan_zero_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
-    assert(result->l2_rules[0].vlan.vlan_id == 0);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_VLAN);
+    assert(result->l2_rules[0].key.vlan_id == 0);
 }
 
 TEST(test_l2_vlan_max_compile) {
@@ -1134,8 +1134,8 @@ TEST(test_l2_vlan_max_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
-    assert(result->l2_rules[0].vlan.vlan_id == 4095);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_VLAN);
+    assert(result->l2_rules[0].key.vlan_id == 4095);
 }
 
 TEST(test_l2_mac_lowercase_compile) {
@@ -1150,9 +1150,9 @@ TEST(test_l2_mac_lowercase_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_DSTMAC);
     uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+    assert(std::memcmp(result->l2_rules[0].key.dst_mac, expected, 6) == 0);
 }
 
 TEST(test_l2_mac_mixed_case_compile) {
@@ -1167,9 +1167,9 @@ TEST(test_l2_mac_mixed_case_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_DSTMAC);
     uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+    assert(std::memcmp(result->l2_rules[0].key.dst_mac, expected, 6) == 0);
 }
 
 TEST(test_l2_single_mac_group_expansion) {
@@ -1185,9 +1185,9 @@ TEST(test_l2_single_mac_group_expansion) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::DstMac);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_DSTMAC);
     uint8_t expected[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-    assert(std::memcmp(result->l2_rules[0].mac.addr, expected, 6) == 0);
+    assert(std::memcmp(result->l2_rules[0].key.dst_mac, expected, 6) == 0);
 }
 
 TEST(test_l2_ethertype_hex_max_compile) {
@@ -1202,8 +1202,8 @@ TEST(test_l2_ethertype_hex_max_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Ethertype);
-    assert(result->l2_rules[0].ether.ethertype == htons(0xFFFF));
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_ETHERTYPE);
+    assert(result->l2_rules[0].key.ethertype == htons(0xFFFF));
 }
 
 TEST(test_l2_collision_ethertype_vlan_independent) {
@@ -1260,9 +1260,8 @@ TEST(test_l2_pcp_only_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Pcp);
-    assert(result->l2_rules[0].pcp.pcp == 6);
-    assert(result->l2_rules[0].rule.filter_mask == 0);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_PCP);
+    assert(result->l2_rules[0].key.pcp == 6);
 }
 
 TEST(test_l2_compound_src_mac_vlan_compile) {
@@ -1278,13 +1277,12 @@ TEST(test_l2_compound_src_mac_vlan_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
-    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_VLAN);
-    assert(result->l2_rules[0].rule.filter_vlan_id == 100);
+    // All constrained fields live in one mask now (single-dispatch design).
+    assert(result->l2_rules[0].key.filter_mask == (FILTER_MASK_SRCMAC | FILTER_MASK_VLAN));
+    assert(result->l2_rules[0].key.vlan_id == 100);
 }
 
 TEST(test_l2_compound_ethertype_vlan_compile) {
-    // vlan_id is more selective than ethertype → primary=Vlan
     config::ObjectStore objects;
     config::Pipeline pipeline;
     config::Rule r;
@@ -1297,9 +1295,8 @@ TEST(test_l2_compound_ethertype_vlan_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
-    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_ETHERTYPE);
-    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
+    assert(result->l2_rules[0].key.filter_mask == (FILTER_MASK_VLAN | FILTER_MASK_ETHERTYPE));
+    assert(result->l2_rules[0].key.ethertype == htons(0x0800));
 }
 
 TEST(test_l2_compound_vlan_pcp_compile) {
@@ -1315,9 +1312,8 @@ TEST(test_l2_compound_vlan_pcp_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::Vlan);
-    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_PCP);
-    assert(result->l2_rules[0].rule.filter_pcp == 5);
+    assert(result->l2_rules[0].key.filter_mask == (FILTER_MASK_VLAN | FILTER_MASK_PCP));
+    assert(result->l2_rules[0].key.pcp == 5);
 }
 
 TEST(test_l2_compound_three_fields_compile) {
@@ -1334,17 +1330,20 @@ TEST(test_l2_compound_three_fields_compile) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    // SrcMac is most selective → primary
-    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
-    assert(result->l2_rules[0].rule.filter_mask == (L2_FILTER_ETHERTYPE | L2_FILTER_VLAN));
-    assert(result->l2_rules[0].rule.filter_vlan_id == 400);
-    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
+    assert(result->l2_rules[0].key.filter_mask ==
+           (FILTER_MASK_SRCMAC | FILTER_MASK_ETHERTYPE | FILTER_MASK_VLAN));
+    assert(result->l2_rules[0].key.vlan_id == 400);
+    assert(result->l2_rules[0].key.ethertype == htons(0x0800));
 }
 
 TEST(test_l2_compound_collision_same_primary) {
     // Two rules with same src_mac but different vlan → collision on primary key
     config::ObjectStore objects;
     config::Pipeline pipeline;
+    // Pre-#10 the compiler used a "primary by lexical order" trick so two
+    // rules sharing src_mac but differing on vlan collided in the per-field
+    // src_mac map and the second was rejected (P1#9). With the composite key
+    // they're distinct entries — both must compile.
     config::Rule r1;
     r1.rule_id = 50;
     r1.match.src_mac = "AA:BB:CC:DD:EE:FF";
@@ -1360,8 +1359,8 @@ TEST(test_l2_compound_collision_same_primary) {
     pipeline.layer_2.push_back(r2);
 
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
-    assert(!result.has_value());
-    assert(result.error().find("collision") != std::string::npos);
+    assert(result.has_value());
+    assert(result->l2_rules.size() == 2);
 }
 
 TEST(test_l2_compound_mac_group_expansion) {
@@ -1380,14 +1379,13 @@ TEST(test_l2_compound_mac_group_expansion) {
     assert(result.has_value());
     assert(result->l2_rules.size() == 3);
     for (auto& cr : result->l2_rules) {
-        assert(cr.type == compiler::L2MatchType::SrcMac);
-        assert(cr.rule.filter_mask & L2_FILTER_VLAN);
-        assert(cr.rule.filter_vlan_id == 100);
+        assert(cr.key.filter_mask == (FILTER_MASK_SRCMAC | FILTER_MASK_VLAN));
+        assert(cr.key.vlan_id == 100);
     }
 }
 
-TEST(test_l2_single_field_filter_mask_zero) {
-    // Old-style single-field rules → filter_mask=0
+TEST(test_l2_single_field_filter_mask_only_one_bit) {
+    // Single-field rule → exactly one bit in filter_mask.
     config::ObjectStore objects;
     config::Pipeline pipeline;
     config::Rule r;
@@ -1398,7 +1396,7 @@ TEST(test_l2_single_field_filter_mask_zero) {
 
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
-    assert(result->l2_rules[0].rule.filter_mask == 0);
+    assert(result->l2_rules[0].key.filter_mask == FILTER_MASK_SRCMAC);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1536,16 +1534,14 @@ TEST(test_l2_ethertype_secondary_htons) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
-    assert(result->l2_rules[0].rule.filter_mask & L2_FILTER_ETHERTYPE);
+    assert(result->l2_rules[0].key.filter_mask == (FILTER_MASK_SRCMAC | FILTER_MASK_ETHERTYPE));
     // Must be htons(0x0800), not raw 0x0800
-    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
-    // Double-check it is NOT host order (on little-endian, htons(0x0800) == 0x0008)
-    assert(result->l2_rules[0].rule.filter_ethertype != 0 );
+    assert(result->l2_rules[0].key.ethertype == htons(0x0800));
+    assert(result->l2_rules[0].key.ethertype != 0);
 }
 
 TEST(test_l2_all_three_secondary_filters) {
-    // Compound L2 rule: src_mac (primary) + ethertype + vlan_id + pcp (all three secondaries).
+    // Compound L2 rule: src_mac + ethertype + vlan_id + pcp (all four bits).
     config::ObjectStore objects;
     config::Pipeline pipeline;
     config::Rule r;
@@ -1560,12 +1556,11 @@ TEST(test_l2_all_three_secondary_filters) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(result.has_value());
     assert(result->l2_rules.size() == 1);
-    assert(result->l2_rules[0].type == compiler::L2MatchType::SrcMac);
-    assert(result->l2_rules[0].rule.filter_mask ==
-           (L2_FILTER_ETHERTYPE | L2_FILTER_VLAN | L2_FILTER_PCP));
-    assert(result->l2_rules[0].rule.filter_ethertype == htons(0x0800));
-    assert(result->l2_rules[0].rule.filter_vlan_id == 42);
-    assert(result->l2_rules[0].rule.filter_pcp == 3);
+    assert(result->l2_rules[0].key.filter_mask ==
+           (FILTER_MASK_SRCMAC | FILTER_MASK_ETHERTYPE | FILTER_MASK_VLAN | FILTER_MASK_PCP));
+    assert(result->l2_rules[0].key.ethertype == htons(0x0800));
+    assert(result->l2_rules[0].key.vlan_id == 42);
+    assert(result->l2_rules[0].key.pcp == 3);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1684,7 +1679,7 @@ TEST(test_l2_mac_group_cross_rule_collision) {
 
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(!result.has_value());
-    assert(result.error().find("L2 src_mac key collision") != std::string::npos);
+    assert(result.error().find("L2 key collision") != std::string::npos);
 }
 
 int main() {

@@ -544,20 +544,15 @@ TEST(l4_match_key_padding_is_zero) {
 // L2 rule struct size and PCP key
 // ═══════════════════════════════════════════════════════════
 
-TEST(l2_rule_sizeof_24) {
-    assert(sizeof(struct l2_rule) == 24);
+TEST(l2_rule_sizeof_20) {
+    /* After #10 single-dispatch refactor: secondary filter fields moved into
+     * the key; rule value is now 4×u32 + u8 next_layer + 3 pad = 20 bytes. */
+    assert(sizeof(struct l2_rule) == 20);
 }
 
-TEST(pcp_key_sizeof_4) {
-    assert(sizeof(struct pcp_key) == 4);
-}
-
-TEST(l2_rule_filter_mask_offset_17) {
-    assert(offsetof(struct l2_rule, filter_mask) == 17);
-}
-
-TEST(l2_rule_filter_vlan_offset_18) {
-    assert(offsetof(struct l2_rule, filter_vlan_id) == 18);
+TEST(l2_key_sizeof_20) {
+    /* Composite key layout from _fixes/02_l2_single_dispatch.md. */
+    assert(sizeof(struct l2_key) == 20);
 }
 
 // ═══════════════════════════════════════════════════════════

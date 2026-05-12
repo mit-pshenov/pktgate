@@ -3,6 +3,7 @@
 #include "util/log.hpp"
 #include "../../bpf/common.h"
 
+#include <algorithm>
 #include <bpf/bpf.h>
 #include <cstring>
 #include <unistd.h>
@@ -48,21 +49,10 @@ GenerationManager::install_programs(uint32_t gen) {
 
 std::expected<void, std::string>
 GenerationManager::clear_shadow_maps(uint32_t gen) {
-    // Clear L2 hash maps
-    auto r = loader::MapManager::clear_hash_map(loader_.l2_src_mac_fd(gen));
-    if (!r) return std::unexpected("clear l2_src_mac: " + r.error());
-
-    r = loader::MapManager::clear_hash_map(loader_.l2_dst_mac_fd(gen));
-    if (!r) return std::unexpected("clear l2_dst_mac: " + r.error());
-
-    r = loader::MapManager::clear_hash_map(loader_.l2_ethertype_fd(gen));
-    if (!r) return std::unexpected("clear l2_ethertype: " + r.error());
-
-    r = loader::MapManager::clear_hash_map(loader_.l2_vlan_fd(gen));
-    if (!r) return std::unexpected("clear l2_vlan: " + r.error());
-
-    r = loader::MapManager::clear_hash_map(loader_.l2_pcp_fd(gen));
-    if (!r) return std::unexpected("clear l2_pcp: " + r.error());
+    // Clear the composite L2 rules map. (l2_active_masks_ is an ARRAY[8] that
+    // gets overwritten by populate_l2_active_masks; no clearing needed.)
+    auto r = loader::MapManager::clear_hash_map(loader_.l2_rules_fd(gen));
+    if (!r) return std::unexpected("clear l2_rules: " + r.error());
 
     // LPM trie: delete tracked keys explicitly (iteration not supported)
     if (!lpm_keys_[gen].empty()) {
@@ -92,41 +82,35 @@ GenerationManager::clear_shadow_maps(uint32_t gen) {
 std::expected<void, std::string>
 GenerationManager::populate_l2_maps(uint32_t gen,
                                      const compiler::CompiledRules& rules) {
-    if (rules.l2_rules.empty()) return {};
+    int rules_fd = loader_.l2_rules_fd(gen);
+    int masks_fd = loader_.l2_active_masks_fd(gen);
+
+    // Always write the active-mask array so a previously-populated generation
+    // doesn't leak masks into a now-empty config. Sorted descending by popcount
+    // so the BPF iterator hits most-specific matches first.
+    std::vector<uint8_t> masks;
+    masks.reserve(rules.l2_rules.size());
+    for (auto& cr : rules.l2_rules) masks.push_back(cr.key.filter_mask);
+    std::sort(masks.begin(), masks.end());
+    masks.erase(std::unique(masks.begin(), masks.end()), masks.end());
+    std::sort(masks.begin(), masks.end(), [](uint8_t a, uint8_t b) {
+        return __builtin_popcount(a) > __builtin_popcount(b);
+    });
+
+    for (uint32_t i = 0; i < MAX_L2_MASKS; ++i) {
+        uint8_t v = (i < masks.size()) ? masks[i] : 0;
+        auto r = loader::MapManager::update_elem(masks_fd, &i, &v, BPF_ANY);
+        if (!r) return std::unexpected("l2_active_masks insert: " + r.error());
+    }
 
     for (auto& cr : rules.l2_rules) {
-        int fd = -1;
-        const void* key = nullptr;
-
-        switch (cr.type) {
-        case compiler::L2MatchType::SrcMac:
-            fd = loader_.l2_src_mac_fd(gen);
-            key = &cr.mac;
-            break;
-        case compiler::L2MatchType::DstMac:
-            fd = loader_.l2_dst_mac_fd(gen);
-            key = &cr.mac;
-            break;
-        case compiler::L2MatchType::Ethertype:
-            fd = loader_.l2_ethertype_fd(gen);
-            key = &cr.ether;
-            break;
-        case compiler::L2MatchType::Vlan:
-            fd = loader_.l2_vlan_fd(gen);
-            key = &cr.vlan;
-            break;
-        case compiler::L2MatchType::Pcp:
-            fd = loader_.l2_pcp_fd(gen);
-            key = &cr.pcp;
-            break;
-        }
-
-        auto r = loader::MapManager::update_elem(fd, key, &cr.rule, BPF_ANY);
-        if (!r) return std::unexpected("L2 map insert (rule " +
+        auto r = loader::MapManager::update_elem(rules_fd, &cr.key, &cr.rule, BPF_ANY);
+        if (!r) return std::unexpected("l2_rules insert (rule " +
                                         std::to_string(cr.rule.rule_id) + "): " + r.error());
     }
 
-    LOG_DBG("Populated L2 maps gen=%u: %zu entries", gen, rules.l2_rules.size());
+    LOG_DBG("Populated L2 maps gen=%u: %zu entries, %zu distinct masks",
+            gen, rules.l2_rules.size(), masks.size());
     return {};
 }
 

@@ -67,7 +67,7 @@ static const char* FULL_CONFIG = R"({
                 "rule_id": 1001,
                 "match": { "protocol": "UDP", "dst_port": "object:dns" },
                 "action": "tag",
-                "action_params": { "dscp": "EF", "cos": 5 }
+                "action_params": { "dscp": "EF" }
             }
         ]
     },
@@ -167,7 +167,7 @@ TEST(roundtrip_l4_dns_tag_params) {
     assert(dns.match.dst_port == 53);
     assert(dns.rule.action == ACT_TAG);
     assert(dns.rule.dscp == 46); // EF
-    assert(dns.rule.cos == 5);
+    // cos rewrite is rejected by the validator (#9) — no value is expected.
 }
 
 TEST(roundtrip_mac_objects_compiled) {
@@ -310,9 +310,8 @@ TEST(roundtrip_compound_l2_src_mac_vlan) {
     assert(cr.has_value());
     assert(cr->l2_rules.size() == 2);  // 2 MACs expanded
     for (auto& entry : cr->l2_rules) {
-        assert(entry.type == compiler::L2MatchType::SrcMac);
-        assert(entry.rule.filter_mask & L2_FILTER_VLAN);
-        assert(entry.rule.filter_vlan_id == 100);
+        assert(entry.key.filter_mask == (FILTER_MASK_SRCMAC | FILTER_MASK_VLAN));
+        assert(entry.key.vlan_id == 100);
         assert(entry.rule.next_layer == 1);  // LAYER_3_IDX
     }
 }
@@ -334,10 +333,9 @@ TEST(roundtrip_pcp_only) {
     auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
     assert(cr.has_value());
     assert(cr->l2_rules.size() == 1);
-    assert(cr->l2_rules[0].type == compiler::L2MatchType::Pcp);
-    assert(cr->l2_rules[0].pcp.pcp == 0);
+    assert(cr->l2_rules[0].key.filter_mask == FILTER_MASK_PCP);
+    assert(cr->l2_rules[0].key.pcp == 0);
     assert(cr->l2_rules[0].rule.action == ACT_DROP);
-    assert(cr->l2_rules[0].rule.filter_mask == 0);
 }
 
 TEST(roundtrip_backward_compat) {
@@ -358,8 +356,8 @@ TEST(roundtrip_backward_compat) {
     auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
     assert(cr.has_value());
     assert(cr->l2_rules.size() == 2);
-    assert(cr->l2_rules[0].rule.filter_mask == 0);
-    assert(cr->l2_rules[1].rule.filter_mask == 0);
+    assert(cr->l2_rules[0].key.filter_mask == FILTER_MASK_ETHERTYPE);
+    assert(cr->l2_rules[1].key.filter_mask == FILTER_MASK_VLAN);
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -165,7 +165,7 @@ TEST(test_full_compile_pipeline) {
     assert(rules->l4_rules.size() == 2); // expanded from port group [80, 443]
 
     // Verify L2 rule
-    assert(rules->l2_rules[0].type == compiler::L2MatchType::SrcMac);
+    assert(rules->l2_rules[0].key.filter_mask == FILTER_MASK_SRCMAC);
     assert(rules->l2_rules[0].rule.action == 1);  // ACT_ALLOW
     assert(rules->l2_rules[0].rule.next_layer == 1); // LAYER_3_IDX
 

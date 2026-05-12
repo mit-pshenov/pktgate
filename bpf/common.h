@@ -45,7 +45,8 @@ enum filter_action {
 
 /* ── Map key / value structures ────────────────────────────── */
 
-/* MAC lookup (padded to 8 bytes for alignment) */
+/* MAC address with explicit padding to 8 bytes — used by object compiler
+ * and the L2 key's src_mac/dst_mac fields. */
 struct mac_key {
     unsigned char addr[6];
     unsigned char _pad[2];
@@ -84,18 +85,6 @@ struct vrf_key {
     __u32 ifindex;    /* VRF device ifindex */
 };
 
-/* EtherType lookup key */
-struct ethertype_key {
-    __u16 ethertype;  /* network byte order */
-    __u16 _pad;
-};
-
-/* VLAN ID lookup key */
-struct vlan_key {
-    __u16 vlan_id;    /* host byte order, 0-4095 */
-    __u16 _pad;
-};
-
 /* ── Per-generation pipeline flags ─────────────────────────── */
 
 /* layer_present mask: which layers carry rules in the current generation.
@@ -108,27 +97,46 @@ struct vlan_key {
 
 /* ── Rule structures ───────────────────────────────────────── */
 
-/* Layer 2 rule — stored as value in L2 hash maps */
-/* L2 secondary filter bitmask — which extra fields to check after primary match */
-#define L2_FILTER_ETHERTYPE  (1 << 0)
-#define L2_FILTER_VLAN       (1 << 1)
-#define L2_FILTER_PCP        (1 << 2)
+/* ── L2 composite key (single-dispatch design, _fixes/02) ──── */
 
+/* Each rule contributes one entry keyed by the fields it constrains.
+ * filter_mask names exactly the set of fields populated in this key.
+ * Other fields MUST be zero in both writes and lookups. */
+#define FILTER_MASK_SRCMAC     (1 << 0)
+#define FILTER_MASK_DSTMAC     (1 << 1)
+#define FILTER_MASK_VLAN       (1 << 2)
+#define FILTER_MASK_ETHERTYPE  (1 << 3)
+#define FILTER_MASK_PCP        (1 << 4)
+
+/* Max distinct filter_mask values in a single deployed ruleset.
+ * BPF data plane iterates at most this many lookups per packet. */
+#define MAX_L2_MASKS    8
+
+/* Composite L2 lookup key — 20 bytes, explicit padding. */
+struct l2_key {
+    __u8   filter_mask;     /* bitmap of FILTER_MASK_* bits set in this entry */
+    __u8   pcp;             /* 0-7, valid iff PCP bit set */
+    __u16  ethertype;       /* network byte order, valid iff ETHERTYPE bit set */
+    __u16  vlan_id;         /* host byte order 0-4095, valid iff VLAN bit set */
+    __u8   src_mac[6];      /* valid iff SRCMAC bit set */
+    __u8   dst_mac[6];      /* valid iff DSTMAC bit set */
+    __u8   _pad[2];
+};
+#ifdef __bpf__
+_Static_assert(sizeof(struct l2_key) == 20, "l2_key must be exactly 20 bytes");
+#else
+static_assert(sizeof(struct l2_key) == 20, "l2_key must be exactly 20 bytes");
+#endif
+
+/* Layer 2 rule — stored as value in the composite l2_rules map.
+ * Match logic lives entirely in the key (filter_mask + projected fields). */
 struct l2_rule {
     __u32 rule_id;
     __u32 action;           /* enum filter_action */
     __u32 redirect_ifindex; /* for ACT_REDIRECT */
     __u32 mirror_ifindex;   /* for ACT_MIRROR   */
     __u8  next_layer;       /* 0=terminal, LAYER_3_IDX, LAYER_4_IDX */
-    __u8  filter_mask;      /* bitmask of L2_FILTER_* secondary checks */
-    __u16 filter_vlan_id;   /* host byte order, checked if FILTER_VLAN */
-    __u16 filter_ethertype; /* network byte order, checked if FILTER_ETHERTYPE */
-    __u8  filter_pcp;       /* 0-7, checked if FILTER_PCP */
-    __u8  _pad;
-};
-
-struct pcp_key {
-    __u32 pcp;  /* 0-7, stored as u32 for BPF hash map key alignment */
+    __u8  _pad[3];
 };
 
 /* Layer 3 rule — stored in rules array, indexed by LPM/VRF lookup */

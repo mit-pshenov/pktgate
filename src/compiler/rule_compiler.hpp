@@ -13,15 +13,12 @@ namespace pktgate::compiler {
 
 /* ── Layer 2 compiled rules ───────────────────────────────── */
 
-enum class L2MatchType { SrcMac, DstMac, Ethertype, Vlan, Pcp };
-
+/* One entry per (config-rule × resolved-MAC) pair. l2_key.filter_mask
+ * names the subset of fields the rule actually constrains; the rest are
+ * zero. See _fixes/02_l2_single_dispatch.md. */
 struct CompiledL2Rule {
-    L2MatchType          type;
-    struct mac_key       mac;    // for SrcMac / DstMac
-    struct ethertype_key ether;  // for Ethertype
-    struct vlan_key      vlan;   // for Vlan
-    struct pcp_key       pcp;    // for Pcp
-    struct l2_rule       rule;
+    struct l2_key  key;
+    struct l2_rule rule;
 };
 
 /* Compiled L3 rule: subnet key → l3_rule */

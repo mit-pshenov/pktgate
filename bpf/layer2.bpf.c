@@ -6,43 +6,62 @@
 #include "maps.h"
 
 /*
- * Layer 2: Ethernet filtering.
+ * Layer 2: Ethernet filtering — single-dispatch design.
  *
- * Checks five hash maps in fixed priority order:
- *   src_mac → dst_mac → ethertype → vlan_id → pcp
- * After primary lookup, secondary filter fields are checked (compound rules).
- * First full match wins — its action is executed.
+ * Five per-field maps collapsed to one composite hash keyed by l2_key
+ * (filter_mask + projected fields). Compiler emits one entry per (rule ×
+ * resolved MAC); userspace also writes l2_active_masks_{gen}[0..N], the
+ * filter_mask values that appear in this generation's ruleset. Per packet
+ * we iterate that array (bounded by MAX_L2_MASKS), project the parsed
+ * Ethernet fields through each mask to form the lookup key, and stop on
+ * first hit.
+ *
+ * Iteration order is most-specific first (popcount desc) so a rule
+ * {src_mac, dst_mac, vlan} wins over {src_mac} on a packet matching both.
  *
  * On no match:
- *   - If LAYER_PRESENT_L2 is set (this generation deployed at least one L2
- *     rule), apply the configured default_behavior. Operator intent says
- *     "rules exist, none matched → fall back to default".
- *   - Otherwise the L2 layer is effectively empty (e.g. an L3-only config),
- *     so we skip to Layer 3 without opinion.
+ *   - LAYER_PRESENT_L2 set → apply default_behavior;
+ *   - bit unset → skip to L3 unchanged (L3-only configs).
  */
 
-/* Check secondary filter fields on a matched rule.
- * Returns true if ALL secondary conditions pass (or filter_mask == 0). */
-static __always_inline bool l2_filters_match(struct l2_rule *rule,
-                                              __u16 eth_proto,
-                                              __u16 vlan_id,
-                                              __u8 pcp)
+struct l2_packet_fields {
+    __u8  src_mac[6];
+    __u8  dst_mac[6];
+    __u16 ethertype;       /* network byte order, inner if QinQ-on-Q */
+    __u16 vlan_id;         /* host byte order, 0 if untagged */
+    __u8  pcp;             /* 0 if untagged */
+};
+
+/* Parse Ethernet + optional single 802.1Q tag. Returns 0 on success,
+ * -1 on bounds failure. QinQ (0x88a8) explicitly out of scope — tracked
+ * as P1 #4 follow-up. */
+static __always_inline int parse_l2(struct xdp_md *ctx, struct l2_packet_fields *p)
 {
-    __u8 mask = rule->filter_mask;
-    if (!mask)
-        return true;
-    if ((mask & L2_FILTER_ETHERTYPE) && rule->filter_ethertype != eth_proto)
-        return false;
-    if ((mask & L2_FILTER_VLAN) && rule->filter_vlan_id != vlan_id)
-        return false;
-    if ((mask & L2_FILTER_PCP) && rule->filter_pcp != pcp)
-        return false;
-    return true;
+    void *data     = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+    if ((void *)(eth + 1) > data_end)
+        return -1;
+
+    __builtin_memcpy(p->src_mac, eth->h_source, 6);
+    __builtin_memcpy(p->dst_mac, eth->h_dest,   6);
+    p->ethertype = eth->h_proto;  /* NBO */
+    p->vlan_id   = 0;
+    p->pcp       = 0;
+
+    if (eth->h_proto == bpf_htons(0x8100)) {
+        if ((void *)((unsigned char *)eth + 14 + 4) > data_end)
+            return -1;
+        __u16 *tci_p = (__u16 *)((unsigned char *)eth + 14);
+        __u16 tci    = bpf_ntohs(*tci_p);
+        p->vlan_id   = tci & 0x0FFF;
+        p->pcp       = (tci >> 13) & 0x7;
+        p->ethertype = *(__u16 *)((unsigned char *)eth + 16);  /* inner ethertype, NBO */
+    }
+    return 0;
 }
 
-/* Apply the configured default_behavior at L2 no-match.
- * Mirrors get_default_action() in layer3.bpf.c — the global default_action
- * map is shared across layers. */
+/* Apply the configured default_behavior at L2 no-match. */
 static __always_inline int get_default_action_l2(struct pkt_meta *meta, __u32 pkt_len)
 {
     __u32 key = 0;
@@ -119,19 +138,27 @@ static __always_inline int handle_l2_action(struct xdp_md *ctx,
     return XDP_PASS;
 }
 
+/* Project parsed packet fields through a filter_mask into an l2_key. Fields
+ * not selected by the mask stay zero (matches what the compiler emits, so
+ * HASH lookup hits). */
+static __always_inline void build_l2_key(struct l2_key *out, __u8 mask,
+                                          const struct l2_packet_fields *p)
+{
+    __builtin_memset(out, 0, sizeof(*out));
+    out->filter_mask = mask;
+    if (mask & FILTER_MASK_PCP)       out->pcp       = p->pcp;
+    if (mask & FILTER_MASK_ETHERTYPE) out->ethertype = p->ethertype;
+    if (mask & FILTER_MASK_VLAN)      out->vlan_id   = p->vlan_id;
+    if (mask & FILTER_MASK_SRCMAC)    __builtin_memcpy(out->src_mac, p->src_mac, 6);
+    if (mask & FILTER_MASK_DSTMAC)    __builtin_memcpy(out->dst_mac, p->dst_mac, 6);
+}
+
 SEC("xdp")
 int layer2_prog(struct xdp_md *ctx)
 {
     void *data     = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
     __u32 pkt_len = (__u32)((unsigned char *)data_end - (unsigned char *)data);
-
-    /* Bounds check for Ethernet header */
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end) {
-        STAT_INC(STAT_DROP_L2_BOUNDS);
-        return XDP_DROP;
-    }
 
     /* Read generation from data_meta area */
     void *data_meta = (void *)(long)ctx->data_meta;
@@ -140,99 +167,48 @@ int layer2_prog(struct xdp_md *ctx)
         STAT_INC(STAT_DROP_L2_NO_META);
         return XDP_DROP;
     }
-
     __u32 gen = meta->generation;
-    struct l2_rule *rule;
 
-    /* ── Parse EtherType, VLAN, PCP early — needed by all lookups for filters ── */
-    __u16 eth_proto = eth->h_proto;  /* network byte order */
-    __u16 vlan_id = 0;
-    __u8  pcp = 0;
-    bool  has_vlan = false;
-
-    /* Parse 802.1Q if present — extract VLAN ID, PCP, and inner ethertype */
-    if (eth_proto == bpf_htons(0x8100)) {
-        /* Need 4 extra bytes for VLAN TCI + inner ethertype */
-        if ((void *)((unsigned char *)eth + 14 + 4) > data_end) {
-            STAT_INC(STAT_DROP_L2_BOUNDS);
-            return XDP_DROP;
-        }
-        __u16 *vlan_tci = (__u16 *)((unsigned char *)eth + 14);
-        __u16 tci_host = bpf_ntohs(*vlan_tci);
-        vlan_id = tci_host & 0x0FFF;
-        pcp = (tci_host >> 13) & 0x7;
-        eth_proto = *(__u16 *)((unsigned char *)eth + 16);  /* inner ethertype, NBO */
-        has_vlan = true;
+    /* Parse Ethernet once */
+    struct l2_packet_fields p;
+    if (parse_l2(ctx, &p) < 0) {
+        STAT_INC(STAT_DROP_L2_BOUNDS);
+        return XDP_DROP;
     }
 
-    /* ── 1. Source MAC lookup ──────────────────────────────── */
-    struct mac_key src_key = {};
-    __builtin_memcpy(src_key.addr, eth->h_source, 6);
+    /* Iterate active masks, most-specific first. Bounded unroll. */
+    #pragma unroll
+    for (__u32 i = 0; i < MAX_L2_MASKS; i++) {
+        __u32 mi = i;
+        __u8 *mp = (gen == 0)
+            ? bpf_map_lookup_elem(&l2_active_masks_0, &mi)
+            : bpf_map_lookup_elem(&l2_active_masks_1, &mi);
+        if (!mp || *mp == 0)
+            break;  /* end of active mask set */
 
-    rule = (gen == 0) ? bpf_map_lookup_elem(&l2_src_mac_0, &src_key)
-                      : bpf_map_lookup_elem(&l2_src_mac_1, &src_key);
-    if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
-        BPF_DBG("L2: src_mac match, rule %d", rule->rule_id);
-        return handle_l2_action(ctx, meta, rule, pkt_len);
-    }
+        struct l2_key key;
+        build_l2_key(&key, *mp, &p);
 
-    /* ── 2. Destination MAC lookup ─────────────────────────── */
-    struct mac_key dst_key = {};
-    __builtin_memcpy(dst_key.addr, eth->h_dest, 6);
-
-    rule = (gen == 0) ? bpf_map_lookup_elem(&l2_dst_mac_0, &dst_key)
-                      : bpf_map_lookup_elem(&l2_dst_mac_1, &dst_key);
-    if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
-        BPF_DBG("L2: dst_mac match, rule %d", rule->rule_id);
-        return handle_l2_action(ctx, meta, rule, pkt_len);
-    }
-
-    /* ── 3. EtherType lookup ───────────────────────────────── */
-    struct ethertype_key ekey = { .ethertype = eth_proto };
-
-    rule = (gen == 0) ? bpf_map_lookup_elem(&l2_ethertype_0, &ekey)
-                      : bpf_map_lookup_elem(&l2_ethertype_1, &ekey);
-    if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
-        BPF_DBG("L2: ethertype match 0x%x, rule %d",
-                 bpf_ntohs(eth_proto), rule->rule_id);
-        return handle_l2_action(ctx, meta, rule, pkt_len);
-    }
-
-    /* ── 4. VLAN ID lookup ─────────────────────────────────── */
-    if (has_vlan) {
-        struct vlan_key vkey = { .vlan_id = vlan_id };
-
-        rule = (gen == 0) ? bpf_map_lookup_elem(&l2_vlan_0, &vkey)
-                          : bpf_map_lookup_elem(&l2_vlan_1, &vkey);
-        if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
-            BPF_DBG("L2: vlan %d match, rule %d", vlan_id, rule->rule_id);
-            return handle_l2_action(ctx, meta, rule, pkt_len);
-        }
-    }
-
-    /* ── 5. PCP lookup (only for tagged frames) ───────────── */
-    if (has_vlan) {
-        struct pcp_key pkey = { .pcp = pcp };
-
-        rule = (gen == 0) ? bpf_map_lookup_elem(&l2_pcp_0, &pkey)
-                          : bpf_map_lookup_elem(&l2_pcp_1, &pkey);
-        if (rule && l2_filters_match(rule, eth_proto, vlan_id, pcp)) {
-            BPF_DBG("L2: pcp %d match, rule %d", pcp, rule->rule_id);
+        struct l2_rule *rule = (gen == 0)
+            ? bpf_map_lookup_elem(&l2_rules_0, &key)
+            : bpf_map_lookup_elem(&l2_rules_1, &key);
+        if (rule) {
+            BPF_DBG("L2: hit mask=0x%x rule=%d", *mp, rule->rule_id);
             return handle_l2_action(ctx, meta, rule, pkt_len);
         }
     }
 
     /* ── No match ──────────────────────────────────────────── */
     __u32 lp_key = 0;
-    __u8 *lp = (gen == 0) ? bpf_map_lookup_elem(&layer_present_0, &lp_key)
-                          : bpf_map_lookup_elem(&layer_present_1, &lp_key);
+    __u8 *lp = (gen == 0)
+        ? bpf_map_lookup_elem(&layer_present_0, &lp_key)
+        : bpf_map_lookup_elem(&layer_present_1, &lp_key);
     if (lp && (*lp & LAYER_PRESENT_L2)) {
-        /* L2 has rules; none matched → apply default_behavior */
         BPF_DBG("L2: no match, applying default, gen=%d", gen);
         return get_default_action_l2(meta, pkt_len);
     }
 
-    /* L2 is empty for this generation → skip to Layer 3 unchanged */
+    /* L2 empty for this generation → skip to L3 */
     if (gen == 0)
         bpf_tail_call(ctx, &prog_array_0, LAYER_3_IDX);
     else

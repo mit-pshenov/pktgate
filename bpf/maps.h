@@ -31,85 +31,45 @@ struct {
     __type(value, __u32);
 } prog_array_1 SEC(".maps");
 
-/* ── Layer 2: source MAC rules (one per generation) ──────── */
+/* ── Layer 2: single composite map per generation ──────────── */
+/* See _fixes/02_l2_single_dispatch.md. The five per-field maps
+ * (src_mac/dst_mac/ethertype/vlan/pcp) were collapsed into one keyed by
+ * l2_key, with filter_mask naming the populated fields. Per packet, BPF
+ * iterates the active-mask array and projects the parsed fields through
+ * each mask to compute the lookup key (bounded by MAX_L2_MASKS). */
+
+#define MAX_L2_ENTRIES  16384
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_MAC_ENTRIES);
-    __type(key, struct mac_key);
+    __uint(max_entries, MAX_L2_ENTRIES);
+    __type(key, struct l2_key);
     __type(value, struct l2_rule);
-} l2_src_mac_0 SEC(".maps");
+} l2_rules_0 SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_MAC_ENTRIES);
-    __type(key, struct mac_key);
+    __uint(max_entries, MAX_L2_ENTRIES);
+    __type(key, struct l2_key);
     __type(value, struct l2_rule);
-} l2_src_mac_1 SEC(".maps");
+} l2_rules_1 SEC(".maps");
 
-/* ── Layer 2: destination MAC rules (one per generation) ──── */
+/* l2_active_masks_{0,1}: filter_mask values that appear in the deployed
+ * ruleset, sorted descending by popcount (most-specific first), zero-
+ * terminated. BPF iterates this array up to MAX_L2_MASKS. */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_L2_MASKS);
+    __type(key, __u32);
+    __type(value, __u8);
+} l2_active_masks_0 SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_MAC_ENTRIES);
-    __type(key, struct mac_key);
-    __type(value, struct l2_rule);
-} l2_dst_mac_0 SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_MAC_ENTRIES);
-    __type(key, struct mac_key);
-    __type(value, struct l2_rule);
-} l2_dst_mac_1 SEC(".maps");
-
-/* ── Layer 2: EtherType rules (one per generation) ────────── */
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_ETHERTYPE_ENTRIES);
-    __type(key, struct ethertype_key);
-    __type(value, struct l2_rule);
-} l2_ethertype_0 SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_ETHERTYPE_ENTRIES);
-    __type(key, struct ethertype_key);
-    __type(value, struct l2_rule);
-} l2_ethertype_1 SEC(".maps");
-
-/* ── Layer 2: VLAN ID rules (one per generation) ─────────── */
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_VLAN_ENTRIES);
-    __type(key, struct vlan_key);
-    __type(value, struct l2_rule);
-} l2_vlan_0 SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_VLAN_ENTRIES);
-    __type(key, struct vlan_key);
-    __type(value, struct l2_rule);
-} l2_vlan_1 SEC(".maps");
-
-/* ── Layer 2: PCP hash → l2_rule (one per gen) ────────── */
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_PCP_ENTRIES);
-    __type(key, struct pcp_key);
-    __type(value, struct l2_rule);
-} l2_pcp_0 SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_PCP_ENTRIES);
-    __type(key, struct pcp_key);
-    __type(value, struct l2_rule);
-} l2_pcp_1 SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, MAX_L2_MASKS);
+    __type(key, __u32);
+    __type(value, __u8);
+} l2_active_masks_1 SEC(".maps");
 
 /* ── Layer 3: Subnet LPM trie → rule index (one per gen) ── */
 
