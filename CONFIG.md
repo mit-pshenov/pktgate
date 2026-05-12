@@ -206,7 +206,7 @@ See [TCP Flags](#tcp-flags) for the flags syntax.
 | `"drop"` | Discard the packet | -- |
 | `"mirror"` | Clone packet to a target interface, then continue processing | `target_port` (interface name) |
 | `"redirect"` | Forward packet to a VRF | `target_vrf` (VRF name) |
-| `"tag"` | Mark packet with DSCP and/or CoS for QoS, then pass | `dscp` and/or `cos` |
+| `"tag"` | Mark packet with DSCP for QoS, then pass | `dscp` |
 | `"rate-limit"` | Per-CPU token bucket; pass if under limit, drop if over | `bandwidth` |
 
 **Action params:**
@@ -216,7 +216,6 @@ See [TCP Flags](#tcp-flags) for the flags syntax.
   "target_port": "Eth-1/10",
   "target_vrf": "captive_portal_vrf",
   "dscp": "EF",
-  "cos": 5,
   "bandwidth": "1Gbps"
 }
 ```
@@ -226,8 +225,12 @@ See [TCP Flags](#tcp-flags) for the flags syntax.
 | `target_port` | string | mirror | Interface name to clone packets to |
 | `target_vrf` | string | redirect | VRF name to redirect packets into |
 | `dscp` | DSCP name | tag | Differentiated Services Code Point (see [DSCP Names](#dscp-names)) |
-| `cos` | integer 0-7 | tag | 802.1p Class of Service value |
 | `bandwidth` | bandwidth string | rate-limit | Token bucket rate (e.g. `"500Mbps"`) |
+
+> **Note:** `cos` (802.1p PCP rewrite) is rejected by the validator until the
+> TC ingress `bpf_skb_vlan_push/pop` path lands. Operators relying on PCP
+> tagging should set DSCP and let downstream switches translate, or wait
+> for the dedicated CoS feature.
 
 **Rate limiting notes:**
 - Uses per-CPU token buckets with 1-second burst

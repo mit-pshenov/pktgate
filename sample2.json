@@ -66,7 +66,7 @@
           "dst_port": "object:critical_dns" 
         },
         "action": "tag",
-        "action_params": { "dscp": "EF", "cos": 5 }
+        "action_params": { "dscp": "EF" }
       },
       {
         "rule_id": 1010,

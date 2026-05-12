@@ -153,7 +153,7 @@ struct port_key { __u16 port; };
 struct port_val { __u32 group_id; };  // к какой группе принадлежит порт
 
 // match: protocol + dst_port (object lookup)
-// action: tag → модификация DSCP/CoS
+// action: tag → модификация DSCP в IPv4 TOS (CoS/PCP — пока не поддерживается, отвергается валидатором)
 // action: rate-limit → token bucket через per-CPU map
 ```
 
@@ -165,7 +165,7 @@ struct port_val { __u32 group_id; };  // к какой группе принад
 | `drop`      | `XDP_DROP`                                                        | XDP     |
 | `mirror`    | `bpf_clone_redirect(skb, ifindex, 0)` — **только TC**            | TC      |
 | `redirect`  | `bpf_redirect(ifindex, 0)` — перенаправление в другой VRF/порт   | XDP/TC  |
-| `tag`       | Перезапись DSCP: `iph->tos = (iph->tos & 0x3) \| (dscp << 2)`; CoS: через `bpf_skb_set_tunnel_key` или VLAN PCP rewrite | TC |
+| `tag`       | IPv4: перезапись DSCP — `iph->tos = (iph->tos & 0x3) \| (dscp << 2)` + L3 checksum update. IPv6: stub (`STAT_TC_TAG_V6_UNIMPL`, требует отдельной реализации). `cos` (802.1p PCP rewrite) отвергается валидатором — нужен `bpf_skb_vlan_push/pop` | TC |
 | `rate-limit`| Per-CPU token bucket: `PERCPU_HASH`, rate/ncpus, 1s burst cap, elapsed clamp | XDP |
 
 ### 3.6. Гибридная модель XDP + TC

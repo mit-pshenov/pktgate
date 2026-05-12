@@ -206,8 +206,9 @@ static void validate_l4_rules(const std::vector<Rule>& rules,
                     errs.push_back({ctx, "unknown DSCP name: " + *r.params.dscp});
                 }
             }
-            if (r.params.cos && *r.params.cos > 7)
-                errs.push_back({ctx, "CoS must be 0-7"});
+            if (r.params.cos)
+                errs.push_back({ctx, "CoS rewrite is not yet supported "
+                                     "(needs bpf_skb_vlan_push/pop in TC ingress)"});
         }
 
         if (r.action == Action::RateLimit) {

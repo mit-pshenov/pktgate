@@ -318,19 +318,22 @@ TEST(test_tag_unknown_dscp) {
     assert(has_error(result.error(), "unknown DSCP name"));
 }
 
-TEST(test_tag_cos_out_of_range) {
+TEST(test_tag_cos_any_value_rejected) {
+    // Pre-#9 this checked "CoS must be 0-7" — the range guard. Now any cos
+    // value is rejected because the TC ingress rewrite isn't implemented.
+    // Once bpf_skb_vlan_push/pop lands, restore the range guard.
     Config cfg;
     Rule r;
     r.rule_id = 1; r.action = Action::Tag;
     r.match.protocol = "UDP";
     r.match.dst_port = "53";
     r.params.dscp = "EF";
-    r.params.cos = 8; // max is 7
+    r.params.cos = 3;  // legal-ish value
     cfg.pipeline.layer_4.push_back(r);
 
     auto result = validate_config(cfg);
     assert(!result.has_value());
-    assert(has_error(result.error(), "CoS must be 0-7"));
+    assert(has_error(result.error(), "not yet supported"));
 }
 
 // ── next_layer validation ───────────────────────────────────
@@ -541,6 +544,39 @@ TEST(test_l4_vlan_id_field_rejected) {
     auto result = validate_config(cfg);
     assert(!result.has_value());
     assert(has_error(result.error(), "field 'vlan_id' is not applicable to layer 4"));
+}
+
+TEST(test_tag_cos_rejected) {
+    // #9 from _review/99_REPORT.md: CoS rewrite needs bpf_skb_vlan_push/pop in
+    // TC ingress which isn't there yet. Validator must refuse `cos` until the
+    // feature lands; otherwise operators configure a knob with no effect.
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Tag;
+    r.match.protocol = "UDP";
+    r.match.dst_port = "53";
+    r.params.dscp = "EF";
+    r.params.cos = 5;
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(), "CoS rewrite is not yet supported"));
+}
+
+TEST(test_tag_dscp_only_accepted) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Tag;
+    r.match.protocol = "UDP";
+    r.match.dst_port = "53";
+    r.params.dscp = "EF";
+    cfg.pipeline.layer_4.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(result.has_value());
 }
 
 TEST(test_l2_dst_mac_object_ref_valid) {

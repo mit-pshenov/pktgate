@@ -213,7 +213,7 @@ def base_config(veth_pair):
                     "description": "Tag DNS with DSCP EF",
                     "match": {"protocol": "UDP", "dst_port": "object:dns_ports"},
                     "action": "tag",
-                    "action_params": {"dscp": "EF", "cos": 5},
+                    "action_params": {"dscp": "EF"},
                 },
             ],
         },
