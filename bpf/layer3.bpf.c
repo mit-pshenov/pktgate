@@ -19,12 +19,22 @@
  *    otherwise apply default action.
  */
 
-static __always_inline int get_default_action(struct pkt_meta *meta, __u32 pkt_len)
+/*
+ * Default-action helpers take `gen` by value, not `struct pkt_meta *meta`.
+ * Reason: their only callers in the "no L4 program installed" tail are
+ * reached AFTER a bpf_tail_call. The kernel ≥6.8 verifier marks
+ * data_meta-derived pointers as scalar after that call, so reading
+ * meta->generation across the boundary fails with
+ *   "R8 invalid mem access 'scalar'"
+ * Caching gen before the tail_call sidesteps that — the value lives in a
+ * spilled stack slot the verifier still trusts.
+ */
+static __always_inline int get_default_action(__u32 gen, __u32 pkt_len)
 {
     __u32 key = 0;
     __u32 *def = NULL;
 
-    if (meta->generation == 0)
+    if (gen == 0)
         def = bpf_map_lookup_elem(&default_action_0, &key);
     else
         def = bpf_map_lookup_elem(&default_action_1, &key);
@@ -37,12 +47,12 @@ static __always_inline int get_default_action(struct pkt_meta *meta, __u32 pkt_l
     return XDP_PASS;
 }
 
-static __always_inline int get_default_action_v6(struct pkt_meta *meta, __u32 pkt_len)
+static __always_inline int get_default_action_v6(__u32 gen, __u32 pkt_len)
 {
     __u32 key = 0;
     __u32 *def = NULL;
 
-    if (meta->generation == 0)
+    if (gen == 0)
         def = bpf_map_lookup_elem(&default_action_0, &key);
     else
         def = bpf_map_lookup_elem(&default_action_1, &key);
@@ -98,13 +108,14 @@ static __always_inline int handle_l3_action(struct xdp_md *ctx,
 
     /* Proceed to Layer 4 if configured */
     if (rule->has_next_layer) {
-        if (meta->generation == 0)
+        __u32 gen = meta->generation;  /* cache before tail_call invalidates meta */
+        if (gen == 0)
             bpf_tail_call(ctx, &prog_array_0, LAYER_4_IDX);
         else
             bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
         /* Tail call failed */
         STAT_INC(STAT_DROP_L3_TAIL);
-        BPF_DBG("L3: tail call to L4 failed, gen=%d", meta->generation);
+        BPF_DBG("L3: tail call to L4 failed, gen=%d", gen);
         return XDP_DROP;
     }
 
@@ -150,12 +161,13 @@ static __always_inline int handle_l3_action_v6(struct xdp_md *ctx,
     }
 
     if (rule->has_next_layer) {
-        if (meta->generation == 0)
+        __u32 gen = meta->generation;
+        if (gen == 0)
             bpf_tail_call(ctx, &prog_array_0, LAYER_4_IDX);
         else
             bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
         STAT_INC(STAT_DROP_L3_TAIL);
-        BPF_DBG("L3v6: tail call to L4 failed, gen=%d", meta->generation);
+        BPF_DBG("L3v6: tail call to L4 failed, gen=%d", gen);
         return XDP_DROP;
     }
 
@@ -259,13 +271,18 @@ int layer3_prog(struct xdp_md *ctx)
         if (vrule6)
             return handle_l3_action_v6(ctx, meta, vrule6, pkt_len);
 
-        /* No match — try Layer 4, fall back to default */
-        if (meta->generation == 0)
+        /*
+         * No match — try Layer 4, fall back to default. Cache gen before
+         * tail_call so the fall-through arm doesn't dereference an
+         * invalidated meta (see get_default_action_v6 comment above).
+         */
+        __u32 gen = meta->generation;
+        if (gen == 0)
             bpf_tail_call(ctx, &prog_array_0, LAYER_4_IDX);
         else
             bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
 
-        return get_default_action_v6(meta, pkt_len);
+        return get_default_action_v6(gen, pkt_len);
     }
 
     /* ── IPv4 path ─────────────────────────────────────────── */
@@ -315,14 +332,18 @@ int layer3_prog(struct xdp_md *ctx)
     if (vrule)
         return handle_l3_action(ctx, meta, vrule, pkt_len);
 
-    /* No match — try Layer 4, fall back to default action */
-    if (meta->generation == 0)
+    /*
+     * No match — try Layer 4, fall back to default action. Cache gen
+     * before tail_call (kernel ≥6.8 verifier invalidates meta after).
+     */
+    __u32 gen = meta->generation;
+    if (gen == 0)
         bpf_tail_call(ctx, &prog_array_0, LAYER_4_IDX);
     else
         bpf_tail_call(ctx, &prog_array_1, LAYER_4_IDX);
 
     /* Tail call failed (no L4 program) — apply default action */
-    return get_default_action(meta, pkt_len);
+    return get_default_action(gen, pkt_len);
 }
 
 char LICENSE[] SEC("license") = "GPL";
