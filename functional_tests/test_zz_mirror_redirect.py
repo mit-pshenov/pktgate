@@ -13,11 +13,32 @@ to the filter namespace.  Setup/teardown is handled by the module fixture.
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
 import time
 import urllib.request
+
+
+def _which_clang():
+    """Locate a clang binary. Prefer plain 'clang' if symlinked; fall back to
+    any versioned 'clang-NN' on PATH (newest wins)."""
+    if shutil.which("clang"):
+        return "clang"
+    versioned = []
+    for d in os.environ.get("PATH", "").split(":"):
+        if not d:
+            continue
+        try:
+            for name in os.listdir(d):
+                if re.fullmatch(r"clang-\d+", name) and os.access(os.path.join(d, name), os.X_OK):
+                    versioned.append(name)
+        except OSError:
+            pass
+    if not versioned:
+        raise RuntimeError("no clang binary found on PATH")
+    return sorted(versioned, key=lambda n: int(n.split("-")[1]), reverse=True)[0]
 
 import pytest
 from scapy.all import Ether, IP, IPv6, TCP, UDP, wrpcap
@@ -62,7 +83,10 @@ def _load_dummy_xdp(ns, iface):
         src_path = "/tmp/xdp_pass.c"
         with open(src_path, "w") as f:
             f.write(src)
-        _run(f"clang-16 -target bpf -O2 -c {src_path} -o {obj_path}")
+        # Pick whichever clang is on PATH; CI installs clang-18, dev hosts may
+        # have other versions. Override via $CLANG env if needed.
+        clang = os.environ.get("CLANG") or _which_clang()
+        _run(f"{clang} -target bpf -O2 -c {src_path} -o {obj_path}")
 
     nsexec(ns, f"ip link set dev {iface} xdp obj {obj_path} sec xdp")
 

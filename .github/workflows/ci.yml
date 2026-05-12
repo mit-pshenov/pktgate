@@ -88,7 +88,12 @@ jobs:
           cmake --build build -j$(nproc)
 
       - name: Run tests
-        run: ctest --test-dir build -E bpf_dataplane --output-on-failure
+        # Includes bpf_dataplane (privileged); sudo required.
+        run: sudo ctest --test-dir build --output-on-failure
+
+      - name: Restore ownership of coverage artifacts
+        # sudo'd tests write .gcda files as root; lcov needs the user to own them.
+        run: sudo chown -R "$(id -u):$(id -g)" build/
 
       - name: Generate coverage report
         run: make -C build coverage
@@ -98,3 +103,72 @@ jobs:
         with:
           name: coverage-report
           path: build/coverage_html/
+
+  bpf-dataplane:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libbpf-dev linux-tools-generic \
+            libelf-dev zlib1g-dev nlohmann-json3-dev
+          REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
+          if [ -n "$REAL" ]; then
+            sudo cp "$REAL" /usr/local/bin/bpftool
+            sudo chmod +x /usr/local/bin/bpftool
+          else
+            echo "::error::bpftool not found under /usr/lib/linux-tools"
+            exit 1
+          fi
+          /usr/local/bin/bpftool version
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Run BPF data-plane tests
+        # Label "bpf" is set on bpf_dataplane in CMakeLists.txt; sudo needed for BPF_PROG_TEST_RUN.
+        run: sudo ctest --test-dir build -L bpf --output-on-failure
+
+  functional:
+    runs-on: ubuntu-24.04
+    # Surfaces pre-existing failures (L2 default_behavior, IPv6 ext-headers)
+    # that the CI shape fix uncovered. Treat as advisory until the underlying
+    # bugs land their fixes (tracked in TaskList items for L2 default-behavior
+    # and #4 IPv6-as-a-class). Flip back to required once all known clusters
+    # are closed.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libbpf-dev linux-tools-generic \
+            libelf-dev zlib1g-dev nlohmann-json3-dev \
+            python3-pytest python3-scapy iproute2
+          REAL=$(find /usr/lib/linux-tools -name bpftool 2>/dev/null | head -1)
+          if [ -n "$REAL" ]; then
+            sudo cp "$REAL" /usr/local/bin/bpftool
+            sudo chmod +x /usr/local/bin/bpftool
+          else
+            echo "::error::bpftool not found under /usr/lib/linux-tools"
+            exit 1
+          fi
+          /usr/local/bin/bpftool version
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Run functional tests
+        # Veth + netns + XDP attach require root.
+        run: sudo bash functional_tests/run.sh
