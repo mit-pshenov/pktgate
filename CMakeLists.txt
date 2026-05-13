@@ -305,6 +305,19 @@ set_tests_properties(bpf_dataplane PROPERTIES
     SKIP_RETURN_CODE 77
 )
 
+add_executable(test_skeleton_invariants
+    tests/bpf/test_skeleton_invariants.cpp
+)
+target_include_directories(test_skeleton_invariants PRIVATE
+    ${CMAKE_SOURCE_DIR}/bpf
+)
+target_link_libraries(test_skeleton_invariants PRIVATE pktgate_lib)
+add_test(NAME skeleton_invariants COMMAND test_skeleton_invariants)
+set_tests_properties(skeleton_invariants PROPERTIES
+    LABELS "bpf;privileged"
+    SKIP_RETURN_CODE 77
+)
+
 # ── validate_config fixture tests ────────────────────────────
 # Positive: the minimal valid config must pass.
 add_test(NAME validate_config_good

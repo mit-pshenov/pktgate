@@ -57,6 +57,13 @@ public:
 
     bool is_loaded() const { return loaded_; }
 
+    /// Look up a map's FD by name inside a specific skeleton.
+    /// `skel` ∈ {"entry", "layer2", "layer3", "layer4", "tc_ingress"}.
+    /// Returns -1 if either the skeleton isn't loaded or the map name isn't
+    /// declared in that skeleton's bpf_object. Used by the cross-skeleton
+    /// map-identity invariant test in tests/test_skeleton_invariants.cpp.
+    int map_fd_in_skel(const char* skel, const char* map_name) const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

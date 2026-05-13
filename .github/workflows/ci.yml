@@ -20,6 +20,17 @@ jobs:
       - name: Check for test-as-contract anti-pattern
         run: bash scripts/check_test_as_contract.sh
 
+  map-reuse-coherence:
+    # Static guard against the "skeleton creates its own kernel map" class.
+    # Every map declared in bpf/maps.h must appear in REUSE_MAP() in
+    # src/loader/bpf_loader.cpp — otherwise populate writes to entry's
+    # copy while the data-plane reads from a private layer copy.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check maps.h ↔ REUSE_MAP coherence
+        run: bash scripts/check_map_reuse.sh
+
   build-and-test:
     runs-on: ubuntu-24.04
     strategy:

@@ -394,4 +394,15 @@ int BpfLoader::tc_ingress_prog_fd() const {
     return bpf_program__fd(impl_->tc_ingress->progs.tc_ingress_prog);
 }
 
+int BpfLoader::map_fd_in_skel(const char* skel, const char* map_name) const {
+    struct bpf_object* obj = nullptr;
+    if      (!std::strcmp(skel, "entry"))      obj = impl_->entry      ? impl_->entry->obj      : nullptr;
+    else if (!std::strcmp(skel, "layer2"))     obj = impl_->layer2     ? impl_->layer2->obj     : nullptr;
+    else if (!std::strcmp(skel, "layer3"))     obj = impl_->layer3     ? impl_->layer3->obj     : nullptr;
+    else if (!std::strcmp(skel, "layer4"))     obj = impl_->layer4     ? impl_->layer4->obj     : nullptr;
+    else if (!std::strcmp(skel, "tc_ingress")) obj = impl_->tc_ingress ? impl_->tc_ingress->obj : nullptr;
+    if (!obj) return -1;
+    return bpf_object__find_map_fd_by_name(obj, map_name);
+}
+
 } // namespace pktgate::loader
