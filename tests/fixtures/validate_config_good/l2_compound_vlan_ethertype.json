@@ -1,0 +1,17 @@
+{
+  "_comment": "L2 compound rule: ethertype=IPv4 + vlan_id=100 → allow + fall through to L3. Exercises composite l2_key compilation with two filter fields.",
+  "device_info": { "interface": "eth0" },
+  "pipeline": {
+    "layer_2": [
+      {
+        "rule_id": 10,
+        "match": { "ethertype": "IPv4", "vlan_id": 100 },
+        "action": "allow",
+        "next_layer": "layer_3"
+      }
+    ],
+    "layer_3": [],
+    "layer_4": []
+  },
+  "default_behavior": "drop"
+}

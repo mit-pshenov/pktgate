@@ -10,6 +10,9 @@
 
 #include <cassert>
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 #include <arpa/inet.h>
 
 using namespace pktgate;
@@ -411,6 +414,123 @@ TEST(roundtrip_l4_backward_compat) {
         assert(r.rule.tcp_flags_set == 0);
         assert(r.rule.tcp_flags_unset == 0);
     }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Fixture corpora — small, test-owned, current-API configurations.
+//
+//   tests/fixtures/validate_config_good/*.json  — must parse + validate + compile,
+//                                          and produce no terminal-wildcard
+//                                          (prefixlen=0 + DROP + no next_layer).
+//   tests/fixtures/validate_config_bad/*.json   — must fail at validate or compile,
+//                                          covering the catastrophic-config
+//                                          shapes from _review/TEST_AUDIT.md
+//                                          (dst_ip-only, wrong-layer fields,
+//                                          wildcard-subnet-drop, ...).
+//
+// Why fixtures and not /scenarios: the /scenarios tree is an idea catalog
+// for development direction, not a contract on the current implementation.
+// Several entries deliberately use fields the validator (correctly) rejects
+// after the P0-01/P0-09 fixes. We pin contract against test-owned fixtures
+// instead, which evolve with the implementation.
+// ═══════════════════════════════════════════════════════════
+
+namespace fs = std::filesystem;
+
+static std::string read_file(const fs::path& p) {
+    std::ifstream f(p);
+    std::stringstream ss; ss << f.rdbuf();
+    return ss.str();
+}
+
+static void check_no_terminal_wildcard(const fs::path& file,
+                                       const compiler::CompiledRules& cr) {
+    for (auto& r : cr.l3_rules) {
+        bool wild = (r.subnet_key.prefixlen == 0);
+        bool terminal = (r.rule.has_next_layer == 0);
+        bool drop = (r.rule.action == ACT_DROP);
+        if (wild && terminal && drop) {
+            std::cerr << "  catch-all L3 DROP in " << file.filename()
+                      << " rule_id=" << r.rule.rule_id << "\n";
+            assert(false && "fixture contains terminal DROP with prefixlen=0");
+        }
+    }
+    for (auto& r : cr.l3v6_rules) {
+        bool wild = (r.subnet_key.prefixlen == 0);
+        bool terminal = (r.rule.has_next_layer == 0);
+        bool drop = (r.rule.action == ACT_DROP);
+        if (wild && terminal && drop) {
+            std::cerr << "  catch-all L3v6 DROP in " << file.filename()
+                      << " rule_id=" << r.rule.rule_id << "\n";
+            assert(false && "fixture contains terminal v6 DROP with prefixlen=0");
+        }
+    }
+}
+
+TEST(roundtrip_good_fixtures_compile_clean) {
+    fs::path dir = fs::path(PKTGATE_SOURCE_DIR) / "tests" / "fixtures" / "validate_config_good";
+    int processed = 0;
+
+    for (auto& entry : fs::directory_iterator(dir)) {
+        if (entry.path().extension() != ".json") continue;
+        const auto& file = entry.path();
+
+        auto cfg = config::parse_config_string(read_file(file));
+        if (!cfg.has_value()) {
+            std::cerr << "  parse FAIL " << file.filename()
+                      << ": " << cfg.error() << "\n";
+            assert(false && "validate_config_good/*.json must parse");
+        }
+
+        auto v = config::validate_config(*cfg);
+        if (!v.has_value()) {
+            std::cerr << "  validate FAIL " << file.filename() << ":\n";
+            for (auto& e : v.error())
+                std::cerr << "    " << e.rule_context << ": " << e.message << "\n";
+            assert(false && "validate_config_good/*.json must validate");
+        }
+
+        auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
+        if (!cr.has_value()) {
+            std::cerr << "  compile FAIL " << file.filename()
+                      << ": " << cr.error() << "\n";
+            assert(false && "validate_config_good/*.json must compile");
+        }
+
+        check_no_terminal_wildcard(file, *cr);
+        ++processed;
+    }
+    assert(processed >= 1 && "validate_config_good/ must contain at least one fixture");
+}
+
+TEST(roundtrip_bad_fixtures_rejected) {
+    fs::path dir = fs::path(PKTGATE_SOURCE_DIR) / "tests" / "fixtures" / "validate_config_bad";
+    int processed = 0;
+
+    for (auto& entry : fs::directory_iterator(dir)) {
+        if (entry.path().extension() != ".json") continue;
+        const auto& file = entry.path();
+
+        auto cfg = config::parse_config_string(read_file(file));
+        // Parser may accept or reject; we only require failure by the time
+        // the full pipeline completes.
+        bool rejected = !cfg.has_value();
+        if (cfg.has_value()) {
+            auto v = config::validate_config(*cfg);
+            rejected = !v.has_value();
+            if (v.has_value()) {
+                auto cr = compiler::compile_rules(cfg->pipeline, cfg->objects, mock_resolver);
+                rejected = !cr.has_value();
+            }
+        }
+        if (!rejected) {
+            std::cerr << "  fixture " << file.filename()
+                      << " was expected to be rejected but compiled clean\n";
+            assert(false && "validate_config_bad/*.json must be rejected somewhere");
+        }
+        ++processed;
+    }
+    assert(processed >= 1 && "validate_config_bad/ must contain at least one fixture");
 }
 
 int main() {

@@ -1,0 +1,14 @@
+{
+  "_comment": "L4 TCP SYN filter: drop packets with SYN set and ACK unset (typical SYN flood / scan detector). Exercises tcp_flags compilation.",
+  "device_info": { "interface": "eth0" },
+  "pipeline": {
+    "layer_4": [
+      {
+        "rule_id": 500,
+        "match": { "protocol": "TCP", "dst_port": "80", "tcp_flags": "SYN,!ACK" },
+        "action": "drop"
+      }
+    ]
+  },
+  "default_behavior": "allow"
+}

@@ -1,0 +1,15 @@
+{
+  "_comment": "P0-09: VLAN PCP / CoS rewrite is not implemented (no bpf_skb_vlan_push/pop in TC ingress). Validator must reject any action_params.cos to avoid silently accepting an unimplemented feature.",
+  "device_info": { "interface": "eth0" },
+  "pipeline": {
+    "layer_4": [
+      {
+        "rule_id": 1,
+        "match": { "protocol": "TCP", "dst_port": "443" },
+        "action": "tag",
+        "action_params": { "cos": 5 }
+      }
+    ]
+  },
+  "default_behavior": "allow"
+}

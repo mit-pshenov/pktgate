@@ -1,0 +1,15 @@
+{
+  "_comment": "P0-07: wrong-layer match field. An L3 rule with dst_port has no L4 lookup engine at L3; validator must reject.",
+  "device_info": { "interface": "eth0" },
+  "objects": { "subnets": { "client": "10.0.0.0/8" } },
+  "pipeline": {
+    "layer_3": [
+      {
+        "rule_id": 1,
+        "match": { "src_ip": "object:client", "dst_port": "80" },
+        "action": "drop"
+      }
+    ]
+  },
+  "default_behavior": "allow"
+}

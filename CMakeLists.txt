@@ -266,6 +266,8 @@ add_test(NAME packet_builder COMMAND test_packet_builder)
 
 add_executable(test_roundtrip tests/test_roundtrip.cpp)
 target_link_libraries(test_roundtrip PRIVATE pktgate_lib)
+target_compile_definitions(test_roundtrip PRIVATE
+    PKTGATE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME roundtrip COMMAND test_roundtrip)
 
 add_executable(test_stress tests/test_stress.cpp)
