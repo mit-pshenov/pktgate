@@ -854,8 +854,9 @@ TEST(test_l2_vlan_id_boundary_4095) {
 // ── L2 ethertype edge cases ─────────────────────────────────
 
 TEST(test_l2_ethertype_incomplete_hex) {
-    // "0x" is parsed by stoul(s, nullptr, 16) as 0 — no exception thrown,
-    // so the validator accepts it as ethertype 0x0000.
+    // "0x" with no hex digits must be rejected (early-reject branch in
+    // parse_ethertype). Previously stoul silently returned 0 → validator
+    // accepted as ethertype 0x0000; that pinned a defect as contract.
     Config cfg;
     cfg.interface = "eth0";
     Rule r;
@@ -864,14 +865,15 @@ TEST(test_l2_ethertype_incomplete_hex) {
     cfg.pipeline.layer_2.push_back(r);
 
     auto result = validate_config(cfg);
-    assert(result.has_value());
+    assert(!result.has_value());
+    assert(has_error(result.error(), "invalid ethertype"));
 }
 
 TEST(test_l2_ethertype_invalid_hex_chars) {
-    // BUG: stoul("0xGGGG", nullptr, 16) parses as 0 without exception
-    // because it consumes the leading "0x" prefix and stops.
-    // The validator therefore accepts this as ethertype 0x0000.
-    // This test documents current (buggy) behavior.
+    // "0xGGGG" must be rejected: parse_ethertype now enforces that the
+    // whole string after "0x" is hex (checks `pos == size`). Previously
+    // stoul consumed only the "0x" prefix and returned 0, so the validator
+    // accepted it as ethertype 0x0000 — locked in by this test as contract.
     Config cfg;
     cfg.interface = "eth0";
     Rule r;
@@ -880,7 +882,8 @@ TEST(test_l2_ethertype_invalid_hex_chars) {
     cfg.pipeline.layer_2.push_back(r);
 
     auto result = validate_config(cfg);
-    assert(result.has_value()); // passes due to stoul quirk
+    assert(!result.has_value());
+    assert(has_error(result.error(), "invalid ethertype"));
 }
 
 TEST(test_l2_ethertype_empty_string) {

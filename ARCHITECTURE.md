@@ -128,9 +128,10 @@ struct l2_rule {
 //        if rule: dispatch action (first-match wins, masks sorted by popcount
 //                 desc at deploy time so most-specific rule fires first).
 //
-// 802.1Q parsing: если h_proto == 0x8100, извлекается vlan_id
-// и inner ethertype. QinQ (0x88a8) не парсится (test_l2_qinq_not_parsed
-// cements the gap as contract — fix blocked on test removal).
+// 802.1Q parsing: если h_proto == 0x8100, извлекается vlan_id и inner
+// ethertype. QinQ (0x88a8) не парсится — отложено (см. §"Known limitations"
+// ниже). Тест `test_l2_qinq_documented_unsupported` пинит текущее
+// поведение и должен быть переписан при добавлении 0x88a8 в parse_l2.
 //
 // On no match L2 consults layer_present_{gen}[0]:
 //   - bit LAYER_PRESENT_L2 set → apply configured default_behavior
@@ -781,6 +782,33 @@ while (g_running) {
     // SIGUSR1 → stats dump
 }
 ```
+
+---
+
+## 9a. Known limitations
+
+Фичи, которые осознанно отложены, но которые могут быть упомянуты в тестах
+или конфигах. Любой тест, который ассертит «здесь работает X неправильно»,
+должен ссылаться сюда — иначе тест становится contract'ом (false safety).
+
+### 9a.1. QinQ (802.1ad, 0x88a8) outer tag не парсится
+
+- **Симптом**: пакеты с outer ethertype 0x88a8 (S-Tag) проходят через `parse_l2`
+  без извлечения `vlan_id`, потому что код проверяет только 0x8100. На L3 такой
+  кадр выглядит как «не-IPv4/v6» и дропается с `STAT_DROP_L3_NOT_IPV4`.
+- **Влияние**: на carrier Gi-side filter, где S-Tag (0x88a8) outer + C-Tag (0x8100)
+  inner — типовая схема, **все правила с `vlan_id` молча промахиваются** на QinQ
+  трафике, а сам трафик дропается на L3 даже без явного DROP-правила.
+- **Цена фикса**: ~20 LOC в `bpf/layer2.bpf.c::parse_l2` — добавить ветку
+  `h_proto == 0x88a8`, читать ещё 4 байта, доставать inner `vlan_id` из второго
+  тэга. Field `vlan_id` уже host byte order, остальные поля совместимы.
+- **Тест-якорь**: `tests/bpf/test_bpf_dataplane.cpp::test_l2_qinq_documented_unsupported`
+  — assert `XDP_DROP`. Этот ассерт **должен перевернуться** одновременно с фиксом:
+  переименование `_documented_unsupported` явно сигналит проверяющему, что
+  ассерт фиксирует bug-by-design, а не желаемое поведение.
+- **Состояние**: открыто. Tracking — TEST_AUDIT §"Phase 2c P1 — QinQ".
+
+### 9a.2. (place future deferred-by-design items here)
 
 ---
 

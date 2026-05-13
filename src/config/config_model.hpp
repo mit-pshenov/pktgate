@@ -133,7 +133,12 @@ inline uint16_t parse_ethertype(const std::string& s) {
     if (s == "IPv6" || s == "ipv6") return 0x86DD;
     if (s == "ARP"  || s == "arp")  return 0x0806;
     if (s.starts_with("0x") || s.starts_with("0X")) {
-        unsigned long val = std::stoul(s, nullptr, 16);
+        if (s.size() < 3)
+            throw std::invalid_argument("EtherType missing hex digits: " + s);
+        size_t pos = 0;
+        unsigned long val = std::stoul(s, &pos, 16);
+        if (pos != s.size())
+            throw std::invalid_argument("EtherType has non-hex characters: " + s);
         if (val > 0xFFFF)
             throw std::invalid_argument("EtherType out of range: " + s);
         return static_cast<uint16_t>(val);

@@ -1185,11 +1185,17 @@ TEST(test_l2_allow_terminal_no_next_layer) {
     MM::delete_elem(loader.l2_rules_fd(0), &mkey);
 }
 
-TEST(test_l2_qinq_not_parsed) {
-    // QinQ frame: outer h_proto = 0x88a8. BPF only handles 0x8100.
-    // 0x88a8 is treated as a regular ethertype, no VLAN parsing.
-    // No ethertype rule for 0x88a8 → falls through to L3.
-    // L3 sees non-IPv4/v6 (the inner frame is garbage) → DROP.
+TEST(test_l2_qinq_documented_unsupported) {
+    // TODO(qinq-S-Tag): QinQ (0x88a8) parsing is not implemented.
+    // This test documents the current behaviour and is expected to be
+    // rewritten the moment 0x88a8 is recognised as an outer VLAN tag.
+    // See ARCHITECTURE.md §"Known limitations" for the design decision
+    // and rationale. Carrier-Gi deployments commonly stack S-Tag (0x88a8)
+    // outer + C-Tag (0x8100) inner; without parsing, every vlan_id rule
+    // silently misses on QinQ traffic.
+    //
+    // Current path: h_proto == 0x88a8 → no VLAN parsing → falls through
+    // to L3 → L3 sees non-IPv4/v6 (inner frame is garbage) → DROP.
     PacketBuilder pkt;
     struct ethhdr eh{};
     memcpy(eh.h_source, UNKNOWN_MAC, 6);

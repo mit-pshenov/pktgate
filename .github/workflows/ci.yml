@@ -10,6 +10,16 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  test-anti-pattern:
+    # Static guard against the "test cements a bug as contract" anti-pattern.
+    # See _review/TEST_AUDIT.md §"Phase 2i" / §"Phase 2c P1" and the script
+    # itself for the rule. No build needed — pure grep over tests/ trees.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check for test-as-contract anti-pattern
+        run: bash scripts/check_test_as_contract.sh
+
   build-and-test:
     runs-on: ubuntu-24.04
     strategy:
