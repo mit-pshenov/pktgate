@@ -110,3 +110,59 @@ class TestL3DstIp:
         )
         assert send_and_check(pkt, f"ip6 dst host {DST_BLOCK_IP6}",
                               expect_pass=False)
+
+
+class TestL3DstIpReload:
+    """B4: reload lifecycle for dst_ip rules. Guards lpm_keys_dst tracking
+    in GenerationManager — a missed bookkeeping would either leave stale
+    rules across reloads (silent rule mixing) or fail to populate the new
+    generation's dst map (silent rule disappearance)."""
+
+    def test_dst_rule_appears_then_disappears_across_reloads(self, veth_pair):
+        client_mac, filter_mac = veth_pair
+        gate = PktgateProcess()
+        try:
+            # Start WITHOUT any dst rule — packet to "blocked" subnet must
+            # pass (default_behavior=allow).
+            base_cfg = {
+                "device_info": {"interface": VETH_FILTER, "capacity": "1Gbps"},
+                "objects": {
+                    "mac_groups": {"clients": [client_mac]},
+                },
+                "pipeline": {
+                    "layer_2": [{
+                        "rule_id": 10,
+                        "match": {"src_mac": "object:clients"},
+                        "action": "allow",
+                        "next_layer": "layer_3",
+                    }],
+                },
+                "default_behavior": "allow",
+            }
+            gate.start(base_cfg)
+
+            pkt = (
+                Ether(src=client_mac, dst=filter_mac)
+                / IP(src=CLIENT_IP4, dst=DST_BLOCK_IP4)
+                / TCP(sport=12345, dport=9999)
+            )
+
+            # Phase 1: no dst rule → packet passes.
+            assert send_and_check(pkt, f"dst host {DST_BLOCK_IP4}",
+                                  expect_pass=True), \
+                "no dst rule should let traffic through"
+
+            # Phase 2: reload with a dst-drop rule → packet drops.
+            gate.reload_config(_dst_only_config(veth_pair))
+            assert send_and_check(pkt, f"dst host {DST_BLOCK_IP4}",
+                                  expect_pass=False), \
+                "dst rule installed via reload must take effect"
+
+            # Phase 3: reload back to no-dst → packet passes again.
+            # Catches the "lpm_keys_dst not cleared on shadow swap" leak.
+            gate.reload_config(base_cfg)
+            assert send_and_check(pkt, f"dst host {DST_BLOCK_IP4}",
+                                  expect_pass=True), \
+                "dst rule removed via reload must stop dropping traffic"
+        finally:
+            gate.stop()

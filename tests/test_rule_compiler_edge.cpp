@@ -1793,6 +1793,10 @@ TEST(prop_v4_no_wildcard_for_prefix_ge_1) {
     std::uniform_int_distribution<int>      prefix_dist(1, 32);
     std::uniform_int_distribution<int>      n_dist(1, 8);
     std::uniform_int_distribution<int>      kind_dist(0, 2);
+    // Half-and-half src vs dst: dst_ip routes into a separate compiled
+    // vector (l3_rules_dst) with the same wildcard footgun shape; we
+    // assert the invariant on both vectors.
+    std::uniform_int_distribution<int>      direction_dist(0, 1);
 
     constexpr int ITERATIONS = 200;
     int compiled = 0;
@@ -1804,8 +1808,10 @@ TEST(prop_v4_no_wildcard_for_prefix_ge_1) {
         for (int i = 0; i < n; ++i) {
             config::Rule r;
             r.rule_id = static_cast<uint32_t>(iter * 1000 + i);
-            r.match.src_ip = fmt_v4_cidr(addr_dist(rng),
-                                         static_cast<uint8_t>(prefix_dist(rng)));
+            auto cidr = fmt_v4_cidr(addr_dist(rng),
+                                    static_cast<uint8_t>(prefix_dist(rng)));
+            if (direction_dist(rng) == 0) r.match.src_ip = cidr;
+            else                          r.match.dst_ip = cidr;
             switch (kind_dist(rng)) {
                 case 0: r.action = config::Action::Allow; r.next_layer = "layer_4"; break;
                 case 1: r.action = config::Action::Drop;  break;
@@ -1817,14 +1823,17 @@ TEST(prop_v4_no_wildcard_for_prefix_ge_1) {
         // Compile may reject (collisions, dup rule_id, address-on-prefix violation).
         // Either branch is fine — we only assert the wildcard invariant.
         if (!cr.has_value()) continue;
-        for (auto& entry : cr->l3_rules) {
-            if (entry.subnet_key.prefixlen == 0) {
-                std::cerr << "  v4 wildcard leaked at iter=" << iter
-                          << " rule_id=" << entry.rule.rule_id
-                          << " seed src_ip=" << *pipeline.layer_3[0].match.src_ip << "\n";
-                assert(false && "compiler produced prefixlen=0 v4 entry from prefix≥1 input");
+        auto check_no_wildcard = [&](const auto& vec, const char* label) {
+            for (auto& entry : vec) {
+                if (entry.subnet_key.prefixlen == 0) {
+                    std::cerr << "  " << label << " wildcard leaked at iter=" << iter
+                              << " rule_id=" << entry.rule.rule_id << "\n";
+                    assert(false && "compiler produced prefixlen=0 v4 entry from prefix≥1 input");
+                }
             }
-        }
+        };
+        check_no_wildcard(cr->l3_rules,     "src");
+        check_no_wildcard(cr->l3_rules_dst, "dst");
         ++compiled;
     }
     assert(compiled > 0 && "no iteration compiled — generator is broken");
@@ -1836,6 +1845,7 @@ TEST(prop_v6_no_wildcard_for_prefix_ge_1) {
     std::uniform_int_distribution<int>      prefix_dist(1, 128);
     std::uniform_int_distribution<int>      n_dist(1, 6);
     std::uniform_int_distribution<int>      kind_dist(0, 2);
+    std::uniform_int_distribution<int>      direction_dist(0, 1);
 
     constexpr int ITERATIONS = 200;
     int compiled = 0;
@@ -1847,8 +1857,10 @@ TEST(prop_v6_no_wildcard_for_prefix_ge_1) {
         for (int i = 0; i < n; ++i) {
             config::Rule r;
             r.rule_id = static_cast<uint32_t>(iter * 1000 + i);
-            r.match.src_ip6 = fmt_v6_cidr(half_dist(rng), half_dist(rng),
-                                          static_cast<uint8_t>(prefix_dist(rng)));
+            auto cidr = fmt_v6_cidr(half_dist(rng), half_dist(rng),
+                                    static_cast<uint8_t>(prefix_dist(rng)));
+            if (direction_dist(rng) == 0) r.match.src_ip6 = cidr;
+            else                          r.match.dst_ip6 = cidr;
             switch (kind_dist(rng)) {
                 case 0: r.action = config::Action::Allow; r.next_layer = "layer_4"; break;
                 case 1: r.action = config::Action::Drop;  break;
@@ -1858,14 +1870,17 @@ TEST(prop_v6_no_wildcard_for_prefix_ge_1) {
         }
         auto cr = compiler::compile_rules(pipeline, objects, null_resolver);
         if (!cr.has_value()) continue;
-        for (auto& entry : cr->l3v6_rules) {
-            if (entry.subnet_key.prefixlen == 0) {
-                std::cerr << "  v6 wildcard leaked at iter=" << iter
-                          << " rule_id=" << entry.rule.rule_id
-                          << " seed src_ip6=" << *pipeline.layer_3[0].match.src_ip6 << "\n";
-                assert(false && "compiler produced prefixlen=0 v6 entry from prefix≥1 input");
+        auto check_no_wildcard = [&](const auto& vec, const char* label) {
+            for (auto& entry : vec) {
+                if (entry.subnet_key.prefixlen == 0) {
+                    std::cerr << "  " << label << " wildcard leaked at iter=" << iter
+                              << " rule_id=" << entry.rule.rule_id << "\n";
+                    assert(false && "compiler produced prefixlen=0 v6 entry from prefix≥1 input");
+                }
             }
-        }
+        };
+        check_no_wildcard(cr->l3v6_rules,     "src6");
+        check_no_wildcard(cr->l3v6_rules_dst, "dst6");
         ++compiled;
     }
     assert(compiled > 0 && "no v6 iteration compiled — generator is broken");

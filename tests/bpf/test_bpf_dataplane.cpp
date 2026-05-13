@@ -1565,6 +1565,84 @@ TEST(test_l3_dst_ip6_drops_matching_destination) {
     MM::delete_elem(loader.subnet6_rules_dst_fd(0), &dkey6);
 }
 
+TEST(test_l3_dst_ip_allow_next_layer_reaches_l4) {
+    // B1: dst rule with action=ALLOW + has_next_layer=1 must fall through
+    // to L4. setup_standard_config has TCP:80 → ALLOW in L4; the packet
+    // should make it all the way through to XDP_PASS.
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v4_key dkey = { .prefixlen = 16, .addr = ip_nbo("10.20.0.0") };
+    struct l3_rule dr{};
+    dr.rule_id        = 5580;
+    dr.action         = ACT_ALLOW;
+    dr.has_next_layer = 1;
+    auto r = MM::update_elem(loader.subnet_rules_dst_fd(0), &dkey, &dr, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("8.8.8.8"), ip_nbo("10.20.5.5"), IPPROTO_TCP)
+        .tcp(1234, 80)  // tcp:80 has ALLOW in L4 per setup_standard_config
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    // dst ALLOW → tail-call to L4 → tcp:80 ALLOW → XDP_PASS
+    assert(res.retval == XDP_PASS);
+
+    MM::delete_elem(loader.subnet_rules_dst_fd(0), &dkey);
+}
+
+TEST(test_l3_dst_ip_lpm_more_specific_wins) {
+    // B2: two dst rules — broad /16 ALLOW + specific /24 DROP. Packet to
+    // an IP that's in both must hit the /24 (more specific) and DROP.
+    // LPM_TRIE semantics: longest-prefix wins regardless of insertion order.
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v4_key broad  = { .prefixlen = 16, .addr = ip_nbo("10.20.0.0") };
+    struct lpm_v4_key narrow = { .prefixlen = 24, .addr = ip_nbo("10.20.5.0") };
+
+    struct l3_rule br{};
+    br.rule_id        = 5590;
+    br.action         = ACT_ALLOW;
+    br.has_next_layer = 1;
+    auto r1 = MM::update_elem(loader.subnet_rules_dst_fd(0), &broad, &br, BPF_ANY);
+    assert(r1.has_value());
+
+    struct l3_rule nr{};
+    nr.rule_id = 5591;
+    nr.action  = ACT_DROP;
+    auto r2 = MM::update_elem(loader.subnet_rules_dst_fd(0), &narrow, &nr, BPF_ANY);
+    assert(r2.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("8.8.8.8"), ip_nbo("10.20.5.5"), IPPROTO_TCP)
+        .tcp(1234, 9999)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    // /24 wins over /16 → DROP.
+    assert(res.retval == XDP_DROP);
+
+    // Sibling probe: packet inside /16 but outside /24 must hit the broad
+    // rule, follow next_layer to L4, and pass (tcp:9999 has no L4 rule but
+    // default_action = DROP in setup_standard_config). We're checking the
+    // /16 fires at all — assert NOT XDP_PASS would conflate paths.
+    auto pkt2 = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("8.8.8.8"), ip_nbo("10.20.99.99"), IPPROTO_TCP)
+        .tcp(1234, 80)  // tcp:80 ALLOW in L4
+        .pad();
+    auto res2 = run_xdp_prog(loader.layer3_prog_fd(), pkt2.data(), pkt2.size(), 1, true);
+    assert(res2.ok);
+    assert(res2.retval == XDP_PASS);  // broad ALLOW + L4 ALLOW
+
+    MM::delete_elem(loader.subnet_rules_dst_fd(0), &broad);
+    MM::delete_elem(loader.subnet_rules_dst_fd(0), &narrow);
+}
+
 TEST(test_l3_ipv6_lpm_match) {
     // Add IPv6 subnet rule: 2001:db8::/32 → DROP. Send 2001:db8::1 → should match → DROP.
     using MM = pktgate::loader::MapManager;
