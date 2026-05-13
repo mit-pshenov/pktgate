@@ -444,30 +444,63 @@ TEST(test_l3_no_match_field_rejected) {
     assert(has_error(result.error(), "must specify a match field"));
 }
 
-TEST(test_l3_dst_ip_rejected) {
-    // dst_ip exists in the parser/model but no destination LPM trie exists in
-    // the data plane. Reject until a real destination trie lands.
+TEST(test_l3_dst_ip_accepted) {
+    // dst_ip is a real L3 match field now (separate destination LPM map in
+    // the data plane). Validator must accept it on its own.
     Config cfg;
+    cfg.interface = "eth0";
     Rule r;
     r.rule_id = 1; r.action = Action::Drop;
     r.match.dst_ip = "10.0.0.0/8";
     cfg.pipeline.layer_3.push_back(r);
 
     auto result = validate_config(cfg);
-    assert(!result.has_value());
-    assert(has_error(result.error(), "dst_ip is not supported"));
+    assert(result.has_value());
 }
 
-TEST(test_l3_dst_ip6_rejected) {
+TEST(test_l3_dst_ip6_accepted) {
     Config cfg;
+    cfg.interface = "eth0";
     Rule r;
     r.rule_id = 1; r.action = Action::Drop;
     r.match.dst_ip6 = "fd00::/8";
     cfg.pipeline.layer_3.push_back(r);
 
     auto result = validate_config(cfg);
+    assert(result.has_value());
+}
+
+TEST(test_l3_src_dst_combo_rejected) {
+    // Conjunction needs composite-key L3 which is not implemented. Mirrors
+    // the L2 src_mac+dst_mac guard. Operators wanting AND should write two
+    // rules.
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Drop;
+    r.match.src_ip = "10.0.0.0/8";
+    r.match.dst_ip = "192.0.2.0/24";
+    cfg.pipeline.layer_3.push_back(r);
+
+    auto result = validate_config(cfg);
     assert(!result.has_value());
-    assert(has_error(result.error(), "dst_ip6 is not supported"));
+    assert(has_error(result.error(),
+                     "src_ip and dst_ip cannot be combined"));
+}
+
+TEST(test_l3_src_dst6_combo_rejected) {
+    Config cfg;
+    cfg.interface = "eth0";
+    Rule r;
+    r.rule_id = 1; r.action = Action::Drop;
+    r.match.src_ip6 = "fd00::/8";
+    r.match.dst_ip6 = "2001:db8::/32";
+    cfg.pipeline.layer_3.push_back(r);
+
+    auto result = validate_config(cfg);
+    assert(!result.has_value());
+    assert(has_error(result.error(),
+                     "src_ip6 and dst_ip6 cannot be combined"));
 }
 
 TEST(test_l3_src_ip_accepted) {

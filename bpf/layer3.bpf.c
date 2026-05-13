@@ -260,6 +260,19 @@ int layer3_prog(struct xdp_md *ctx)
         if (rule6)
             return handle_l3_action_v6(ctx, meta, rule6, pkt_len);
 
+        /* dst_ip6 LPM — try the destination address against the dst map */
+        struct lpm_v6_key lpm6_dkey = { .prefixlen = 128 };
+        __builtin_memcpy(lpm6_dkey.addr, &ip6h->daddr, 16);
+
+        struct l3_rule *drule6 = NULL;
+        if (meta->generation == 0)
+            drule6 = bpf_map_lookup_elem(&subnet6_rules_dst_0, &lpm6_dkey);
+        else
+            drule6 = bpf_map_lookup_elem(&subnet6_rules_dst_1, &lpm6_dkey);
+
+        if (drule6)
+            return handle_l3_action_v6(ctx, meta, drule6, pkt_len);
+
         /* VRF fallback */
         struct vrf_key vkey6 = { .ifindex = ctx->ingress_ifindex };
         struct l3_rule *vrule6 = NULL;
@@ -319,6 +332,24 @@ int layer3_prog(struct xdp_md *ctx)
 
     if (rule)
         return handle_l3_action(ctx, meta, rule, pkt_len);
+
+    /* dst_ip LPM — try the destination address against the dst map.
+     * Source matches win over destination matches when both apply; this
+     * matches operator intuition ("rule A is keyed on who sent it,
+     * rule B is keyed on who it's going to, A fires first"). */
+    struct lpm_v4_key lpm_dkey = {
+        .prefixlen = 32,
+        .addr      = iph->daddr,
+    };
+
+    struct l3_rule *drule = NULL;
+    if (meta->generation == 0)
+        drule = bpf_map_lookup_elem(&subnet_rules_dst_0, &lpm_dkey);
+    else
+        drule = bpf_map_lookup_elem(&subnet_rules_dst_1, &lpm_dkey);
+
+    if (drule)
+        return handle_l3_action(ctx, meta, drule, pkt_len);
 
     /* No subnet match — check VRF rules */
     struct vrf_key vkey = { .ifindex = ctx->ingress_ifindex };

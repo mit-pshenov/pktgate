@@ -30,6 +30,8 @@ public:
     int l2_active_masks_fd(uint32_t gen) const;
     int subnet_rules_fd(uint32_t gen) const;
     int subnet6_rules_fd(uint32_t gen) const;
+    int subnet_rules_dst_fd(uint32_t gen) const;
+    int subnet6_rules_dst_fd(uint32_t gen) const;
     int vrf_rules_fd(uint32_t gen) const;
     int l4_rules_fd(uint32_t gen) const;
     int prog_array_fd(uint32_t gen) const;

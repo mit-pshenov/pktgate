@@ -1,0 +1,20 @@
+{
+  "_comment": "src_ip + dst_ip in one L3 rule would need composite-key L3 lookup, which is not implemented. Validator must reject; operators wanting AND should write two rules.",
+  "device_info": { "interface": "eth0" },
+  "objects": {
+    "subnets": {
+      "src_net":  "10.0.0.0/8",
+      "dst_net":  "192.0.2.0/24"
+    }
+  },
+  "pipeline": {
+    "layer_3": [
+      {
+        "rule_id": 1,
+        "match": { "src_ip": "object:src_net", "dst_ip": "object:dst_net" },
+        "action": "drop"
+      }
+    ]
+  },
+  "default_behavior": "allow"
+}

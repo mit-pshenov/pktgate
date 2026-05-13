@@ -188,9 +188,17 @@ struct lpm_v6_key {
 //     TC ingress then bpf_clone_redirect(skb, mirror_ifindex, 0). See 3.6.
 //   - redirect: bpf_redirect(ifindex, 0) at XDP — bypasses TC.
 //
-// Validator rejects dst_ip/dst_ip6 as match fields (closed P0-01): there is
-// no destination LPM trie, only source. Previously the compiler silently
-// expanded dst_ip into 0.0.0.0/0 (matched everything).
+// src_ip / dst_ip are full first-class match fields: each routes into its
+// own LPM_TRIE map (subnet_rules_{0,1} keyed on src, subnet_rules_dst_{0,1}
+// keyed on dst). Lookup order is src → dst → VRF → default; source matches
+// win when both apply. Same shape for IPv6 (subnet6_rules*). src+dst in
+// one rule is rejected at validation — composite-key L3 is not implemented;
+// operators wanting AND should split into two rules.
+//
+// History: dst_ip used to be silently parsed and dropped by the compiler,
+// turning narrow drops into 0.0.0.0/0 wildcards (P0-01 Gi-blackhole).
+// Validator then rejected it outright as a stop-gap; real destination
+// LPM support landed afterwards.
 ```
 
 ### 3.4. Layer 4 — Transport Filtering

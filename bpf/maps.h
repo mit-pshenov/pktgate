@@ -108,6 +108,44 @@ struct {
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } subnet6_rules_1 SEC(".maps");
 
+/* ── Layer 3: dst_ip LPM trie → rule (one per gen) ──────── */
+/* Mirror of subnet_rules_{0,1} keyed on the destination address.
+ * Lookups happen after src LPM miss; first-match wins source-over-dest.
+ * Separate maps (rather than a unified marker key) keep the verifier
+ * unroll cost identical to the src path. */
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, MAX_SUBNET_ENTRIES);
+    __type(key, struct lpm_v4_key);
+    __type(value, struct l3_rule);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} subnet_rules_dst_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, MAX_SUBNET_ENTRIES);
+    __type(key, struct lpm_v4_key);
+    __type(value, struct l3_rule);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} subnet_rules_dst_1 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, MAX_SUBNET_ENTRIES);
+    __type(key, struct lpm_v6_key);
+    __type(value, struct l3_rule);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} subnet6_rules_dst_0 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, MAX_SUBNET_ENTRIES);
+    __type(key, struct lpm_v6_key);
+    __type(value, struct l3_rule);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} subnet6_rules_dst_1 SEC(".maps");
+
 /* ── Layer 3: VRF → action (one per generation) ───────────── */
 
 struct {

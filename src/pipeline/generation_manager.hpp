@@ -43,6 +43,10 @@ private:
         uint32_t gen, const compiler::CompiledRules& rules);
     std::expected<void, std::string> populate_subnet6_map(
         uint32_t gen, const compiler::CompiledRules& rules);
+    std::expected<void, std::string> populate_subnet_dst_map(
+        uint32_t gen, const compiler::CompiledRules& rules);
+    std::expected<void, std::string> populate_subnet6_dst_map(
+        uint32_t gen, const compiler::CompiledRules& rules);
     std::expected<void, std::string> populate_vrf_map(
         uint32_t gen, const compiler::CompiledRules& rules);
     std::expected<void, std::string> populate_l4_map(
@@ -56,9 +60,12 @@ private:
     loader::BpfLoader& loader_;
 
     // Track inserted LPM keys per generation for explicit deletion
-    // (LPM_TRIE does not support iteration)
+    // (LPM_TRIE does not support iteration). One vector per direction
+    // (src vs dst) so reload cleanup hits both maps.
     std::vector<std::vector<uint8_t>> lpm_keys_[2];
     std::vector<std::vector<uint8_t>> lpm6_keys_[2];
+    std::vector<std::vector<uint8_t>> lpm_keys_dst_[2];
+    std::vector<std::vector<uint8_t>> lpm6_keys_dst_[2];
 
     // rule_ids of RATE_LIMIT rules per generation. Filled by prepare(),
     // consumed by commit() to prune stale rate_state_map entries (P1#7).

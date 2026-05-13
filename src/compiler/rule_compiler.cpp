@@ -209,8 +209,8 @@ compile_rules(const config::Pipeline& pipeline,
                 cr.rule.mirror_ifindex = resolver(*rule.params.target_port);
             }
 
+            // IPv6 paths first (separate maps from IPv4)
             if (rule.match.src_ip6) {
-                // IPv6 rule — goes into l3v6_rules
                 auto cidr6 = resolve_object_subnet6(*rule.match.src_ip6, objects);
                 auto prefix6 = util::Ipv6Prefix::parse(cidr6);
 
@@ -219,20 +219,47 @@ compile_rules(const config::Pipeline& pipeline,
                 cr6.subnet_key.prefixlen = prefix6.prefixlen;
                 std::memcpy(cr6.subnet_key.addr, prefix6.addr.data(), 16);
                 result.l3v6_rules.push_back(cr6);
-                continue;  // skip v4 push below
+                continue;
+            }
+            if (rule.match.dst_ip6) {
+                auto cidr6 = resolve_object_subnet6(*rule.match.dst_ip6, objects);
+                auto prefix6 = util::Ipv6Prefix::parse(cidr6);
+
+                CompiledL3v6Rule cr6{};
+                cr6.rule = cr.rule;
+                cr6.subnet_key.prefixlen = prefix6.prefixlen;
+                std::memcpy(cr6.subnet_key.addr, prefix6.addr.data(), 16);
+                result.l3v6_rules_dst.push_back(cr6);
+                continue;
             }
 
+            // IPv4 paths
             if (rule.match.src_ip) {
                 auto cidr = resolve_object_subnet(*rule.match.src_ip, objects);
                 auto prefix = util::Ipv4Prefix::parse(cidr);
                 cr.subnet_key.prefixlen = prefix.prefixlen;
                 cr.subnet_key.addr      = prefix.addr_nbo();
-            } else if (rule.match.vrf) {
+                result.l3_rules.push_back(cr);
+                continue;
+            }
+            if (rule.match.dst_ip) {
+                auto cidr = resolve_object_subnet(*rule.match.dst_ip, objects);
+                auto prefix = util::Ipv4Prefix::parse(cidr);
+                cr.subnet_key.prefixlen = prefix.prefixlen;
+                cr.subnet_key.addr      = prefix.addr_nbo();
+                result.l3_rules_dst.push_back(cr);
+                continue;
+            }
+            if (rule.match.vrf) {
                 cr.is_vrf_rule  = true;
                 cr.vrf_ifindex  = resolver(*rule.match.vrf);
+                result.l3_rules.push_back(cr);
+                continue;
             }
 
-            result.l3_rules.push_back(cr);
+            // Defence in depth — validator should have caught this already.
+            return std::unexpected("L3 rule " + std::to_string(rule.rule_id) +
+                                   " has no recognised match field");
         }
 
         // Compile Layer 4 rules
@@ -413,8 +440,10 @@ compile_rules(const config::Pipeline& pipeline,
         struct Limit { const char* label; size_t actual; size_t cap; };
         const Limit limits[] = {
             {"L2 rules (MAX_L2_ENTRIES)",      result.l2_rules.size(),   MAX_L2_ENTRIES},
-            {"L3 IPv4 subnets (MAX_SUBNET_ENTRIES)", subnet_v4_count,    MAX_SUBNET_ENTRIES},
-            {"L3 IPv6 subnets (MAX_SUBNET_ENTRIES)", result.l3v6_rules.size(), MAX_SUBNET_ENTRIES},
+            {"L3 IPv4 subnets (MAX_SUBNET_ENTRIES)",   subnet_v4_count,             MAX_SUBNET_ENTRIES},
+            {"L3 IPv6 subnets (MAX_SUBNET_ENTRIES)",   result.l3v6_rules.size(),    MAX_SUBNET_ENTRIES},
+            {"L3 IPv4 dst subnets (MAX_SUBNET_ENTRIES)", result.l3_rules_dst.size(),    MAX_SUBNET_ENTRIES},
+            {"L3 IPv6 dst subnets (MAX_SUBNET_ENTRIES)", result.l3v6_rules_dst.size(),  MAX_SUBNET_ENTRIES},
             {"L3 VRF rules (MAX_VRF_ENTRIES)", vrf_count,                MAX_VRF_ENTRIES},
             {"L4 rules (MAX_PORT_ENTRIES)",    result.l4_rules.size(),   MAX_PORT_ENTRIES},
         };

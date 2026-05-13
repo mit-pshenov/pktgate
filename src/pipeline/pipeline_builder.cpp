@@ -49,7 +49,12 @@ PipelineBuilder::deploy(const config::Config& cfg,
             return std::unexpected("Rule compilation: " + rules.error());
         rules_val = std::move(*rules);
     }
-    stats.l3_rules_total = static_cast<uint32_t>(rules_val.l3_rules.size());
+    // l3_rules counts src-keyed entries (LPM-by-src + VRF); l3_rules_dst is
+    // destination-keyed and lives in a parallel map. Include both in the
+    // top-level stats so an operator sees the real deploy size.
+    stats.l3_rules_total = static_cast<uint32_t>(
+        rules_val.l3_rules.size()    + rules_val.l3v6_rules.size() +
+        rules_val.l3_rules_dst.size() + rules_val.l3v6_rules_dst.size());
     stats.l4_rules_total = static_cast<uint32_t>(rules_val.l4_rules.size());
     stats.l4_entries = stats.l4_rules_total;
 

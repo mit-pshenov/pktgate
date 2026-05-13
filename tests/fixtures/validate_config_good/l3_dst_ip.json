@@ -1,0 +1,17 @@
+{
+  "_comment": "L3 dst_ip rule: drop traffic destined for an internal subnet from the world. Exercises the destination LPM map added alongside src_ip lookup.",
+  "device_info": { "interface": "eth0" },
+  "objects": {
+    "subnets": { "internal_db": "10.20.0.0/16" }
+  },
+  "pipeline": {
+    "layer_3": [
+      {
+        "rule_id": 1,
+        "match": { "dst_ip": "object:internal_db" },
+        "action": "drop"
+      }
+    ]
+  },
+  "default_behavior": "allow"
+}

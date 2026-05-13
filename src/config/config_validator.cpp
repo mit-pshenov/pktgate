@@ -49,9 +49,10 @@ static void check_field_applicability(const MatchCriteria& m,
         if (m.pcp)       reject("pcp");
     }
     if (layer != 3) {
-        // dst_ip / dst_ip6 already rejected outright in validate_l3_rules.
         if (m.src_ip)    reject("src_ip");
         if (m.src_ip6)   reject("src_ip6");
+        if (m.dst_ip)    reject("dst_ip");
+        if (m.dst_ip6)   reject("dst_ip6");
         if (m.vrf)       reject("vrf");
     }
     if (layer != 4) {
@@ -124,36 +125,41 @@ static void validate_l3_rules(const std::vector<Rule>& rules,
 
         check_field_applicability(r.match, 3, ctx, errs);
 
-        // dst_ip / dst_ip6 are parsed into the model but no destination LPM
-        // trie exists in the data plane. Silently compiling them as a 0.0.0.0/0
-        // entry (legacy fall-through in the compiler) turned a narrow drop
-        // into a Gi-blackhole. Reject explicitly until destination LPM lands.
-        if (r.match.dst_ip)
-            errs.push_back({ctx, "dst_ip is not supported as an L3 match field"});
-        if (r.match.dst_ip6)
-            errs.push_back({ctx, "dst_ip6 is not supported as an L3 match field"});
-
-        // L3 rule must specify at least one supported match field. Mirrors the
-        // L2 guard above; without it, a typo (e.g. dst_ip instead of src_ip)
-        // produces a rule with no constraints.
+        // L3 rule must specify at least one supported match field. Without
+        // it, the rule compiles to a 0.0.0.0/0 wildcard — a Gi-blackhole if
+        // the action is drop (this was the P0-01 footgun).
         int match_count = 0;
         if (r.match.src_ip)  ++match_count;
         if (r.match.src_ip6) ++match_count;
+        if (r.match.dst_ip)  ++match_count;
+        if (r.match.dst_ip6) ++match_count;
         if (r.match.vrf)     ++match_count;
         if (match_count == 0)
-            errs.push_back({ctx, "L3 rule must specify a match field (src_ip, src_ip6, or vrf)"});
+            errs.push_back({ctx, "L3 rule must specify a match field (src_ip, src_ip6, dst_ip, dst_ip6, or vrf)"});
+
+        // Same-family src/dst combo is two LPM lookups against two maps in
+        // the data plane; conjunction would require composite-key L3 (not
+        // implemented). Mirrors the L2 src_mac+dst_mac guard. Operators
+        // wanting AND should write two rules or wait for compound L3.
+        if (r.match.src_ip && r.match.dst_ip)
+            errs.push_back({ctx, "src_ip and dst_ip cannot be combined in one L3 rule (write two rules instead)"});
+        if (r.match.src_ip6 && r.match.dst_ip6)
+            errs.push_back({ctx, "src_ip6 and dst_ip6 cannot be combined in one L3 rule (write two rules instead)"});
 
         if (r.match.src_ip)
             check_object_ref(*r.match.src_ip, "subnet", objects.subnets, ctx, errs);
+        if (r.match.dst_ip)
+            check_object_ref(*r.match.dst_ip, "subnet", objects.subnets, ctx, errs);
 
-        if (r.match.src_ip6) {
-            // Check object6: references against subnets6 store
-            if (r.match.src_ip6->starts_with("object6:")) {
-                auto name = r.match.src_ip6->substr(8);
+        auto check_subnet6_ref = [&](const std::string& v) {
+            if (v.starts_with("object6:")) {
+                auto name = v.substr(8);
                 if (objects.subnets6.find(name) == objects.subnets6.end())
                     errs.push_back({ctx, "unknown subnet6 object: " + name});
             }
-        }
+        };
+        if (r.match.src_ip6) check_subnet6_ref(*r.match.src_ip6);
+        if (r.match.dst_ip6) check_subnet6_ref(*r.match.dst_ip6);
 
         if (r.action == Action::Mirror && !r.params.target_port)
             errs.push_back({ctx, "mirror action requires target_port"});

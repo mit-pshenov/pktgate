@@ -13,9 +13,22 @@ The pattern matters more than the individual misses. Note when a finding represe
 
 ## Findings ledger
 
-### [Phase 2a] P0 — `dst_ip` becomes catch-all wildcard
+### [Phase 2a] P0 — `dst_ip` becomes catch-all wildcard [RESOLVED 2026-05-13]
 
-Where: `src/compiler/rule_compiler.cpp:206-243` + `src/config/config_validator.cpp:82-111`.
+Originally resolved 2026-05-12 (commit `0624e31`) by **rejecting** `dst_ip`/`dst_ip6`
+outright at validation. On 2026-05-13 the underlying feature was actually
+implemented: a parallel `subnet_rules_dst_{0,1}` LPM map (plus IPv6 sibling),
+src→dst→VRF lookup order in layer3.bpf.c, compiler split into `l3_rules` /
+`l3_rules_dst`, validator now rejects only the src+dst combo in one rule
+(composite-key L3 unimplemented). Coverage added:
+unit `test_l3_dst_ip_accepted`/`test_l3_src_dst_combo_rejected`,
+bpf-dataplane `test_l3_dst_ip_drops_matching_destination` /
+`test_l3_src_lookup_wins_over_dst_lookup` / IPv6 sibling, functional
+`test_zz_dst_ip.py::TestL3DstIp::*`, good-fixture
+`validate_config_good/l3_dst_ip.json`, repurposed bad-fixture
+`validate_config_bad/src_dst_combo.json`.
+
+Where (original): `src/compiler/rule_compiler.cpp:206-243` + `src/config/config_validator.cpp:82-111`.
 Symptom: `{match:{dst_ip:"10/8"}, action:drop}` drops ALL IPv4 traffic.
 
 Expected to catch this:

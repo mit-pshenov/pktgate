@@ -91,6 +91,10 @@ std::expected<void, std::string> BpfLoader::load() {
         REUSE_MAP(subnet_rules_1);
         REUSE_MAP(subnet6_rules_0);
         REUSE_MAP(subnet6_rules_1);
+        REUSE_MAP(subnet_rules_dst_0);
+        REUSE_MAP(subnet_rules_dst_1);
+        REUSE_MAP(subnet6_rules_dst_0);
+        REUSE_MAP(subnet6_rules_dst_1);
         REUSE_MAP(vrf_rules_0);
         REUSE_MAP(vrf_rules_1);
         REUSE_MAP(l4_rules_0);
@@ -293,6 +297,20 @@ int BpfLoader::subnet6_rules_fd(uint32_t gen) const {
     return gen == 0
         ? bpf_map__fd(impl_->entry->maps.subnet6_rules_0)
         : bpf_map__fd(impl_->entry->maps.subnet6_rules_1);
+}
+
+int BpfLoader::subnet_rules_dst_fd(uint32_t gen) const {
+    if (!impl_->entry) return -1;
+    return gen == 0
+        ? bpf_map__fd(impl_->entry->maps.subnet_rules_dst_0)
+        : bpf_map__fd(impl_->entry->maps.subnet_rules_dst_1);
+}
+
+int BpfLoader::subnet6_rules_dst_fd(uint32_t gen) const {
+    if (!impl_->entry) return -1;
+    return gen == 0
+        ? bpf_map__fd(impl_->entry->maps.subnet6_rules_dst_0)
+        : bpf_map__fd(impl_->entry->maps.subnet6_rules_dst_1);
 }
 
 int BpfLoader::vrf_rules_fd(uint32_t gen) const {

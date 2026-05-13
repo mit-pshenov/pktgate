@@ -43,8 +43,10 @@ struct CompiledL4Rule {
 
 struct CompiledRules {
     std::vector<CompiledL2Rule>   l2_rules;
-    std::vector<CompiledL3Rule>   l3_rules;
-    std::vector<CompiledL3v6Rule> l3v6_rules;
+    std::vector<CompiledL3Rule>   l3_rules;       // keyed on src_ip
+    std::vector<CompiledL3v6Rule> l3v6_rules;     // keyed on src_ip6
+    std::vector<CompiledL3Rule>   l3_rules_dst;   // keyed on dst_ip
+    std::vector<CompiledL3v6Rule> l3v6_rules_dst; // keyed on dst_ip6
     std::vector<CompiledL4Rule>   l4_rules;
 };
 

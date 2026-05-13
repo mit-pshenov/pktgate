@@ -314,11 +314,11 @@ add_test(NAME validate_config_good
 
 # Negative: each known-bad fixture must be rejected (exit non-zero).
 # Use WILL_FAIL so the test passes when the tool correctly refuses the config.
-add_test(NAME validate_config_bad_dst_ip
+add_test(NAME validate_config_bad_src_dst_combo
     COMMAND validate_config
-        ${CMAKE_SOURCE_DIR}/tests/fixtures/validate_config_bad/dst_ip_wildcard.json
+        ${CMAKE_SOURCE_DIR}/tests/fixtures/validate_config_bad/src_dst_combo.json
 )
-set_tests_properties(validate_config_bad_dst_ip PROPERTIES WILL_FAIL TRUE)
+set_tests_properties(validate_config_bad_src_dst_combo PROPERTIES WILL_FAIL TRUE)
 
 add_test(NAME validate_config_bad_empty_l3
     COMMAND validate_config
@@ -344,7 +344,7 @@ set_tests_properties(
     config_parser object_compiler generation_logic net_types
     config_validation rule_compiler_edge config_validator
     byte_layout packet_builder ipv6 fault_injection prometheus
-    validate_config_good validate_config_bad_dst_ip
+    validate_config_good validate_config_bad_src_dst_combo
     validate_config_bad_empty_l3 validate_config_bad_unknown_ref
     check_consistency
     PROPERTIES LABELS "unit"

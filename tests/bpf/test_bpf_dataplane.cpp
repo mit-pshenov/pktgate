@@ -1445,6 +1445,126 @@ static PacketBuilder build_ipv6_packet(const uint8_t src_mac[6], const uint8_t d
     return pkt;
 }
 
+TEST(test_l3_dst_ip_drops_matching_destination) {
+    // dst_ip LPM: install rule in subnet_rules_dst_0 for 10.20.0.0/16 → DROP.
+    // Send packet to 10.20.5.5 → match → DROP.
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v4_key dkey = { .prefixlen = 16, .addr = ip_nbo("10.20.0.0") };
+    struct l3_rule dr{};
+    dr.rule_id = 5550;
+    dr.action  = ACT_DROP;
+    auto r = MM::update_elem(loader.subnet_rules_dst_fd(0), &dkey, &dr, BPF_ANY);
+    assert(r.has_value());
+
+    // Send from arbitrary src (no src_ip rule) to a matching dst.
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("8.8.8.8"), ip_nbo("10.20.5.5"), IPPROTO_TCP)
+        .tcp(1234, 9999)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+
+    MM::delete_elem(loader.subnet_rules_dst_fd(0), &dkey);
+}
+
+TEST(test_l3_dst_ip_misses_when_destination_outside_subnet) {
+    // dst_ip rule installed but packet's destination is NOT in subnet.
+    // No src rule, no dst rule → fall through to L4 → no rule → default DROP.
+    // (This is the "negative match" test that was missing before P0-01.)
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v4_key dkey = { .prefixlen = 24, .addr = ip_nbo("10.20.0.0") };
+    struct l3_rule dr{};
+    dr.rule_id = 5551;
+    dr.action  = ACT_DROP;
+    auto r = MM::update_elem(loader.subnet_rules_dst_fd(0), &dkey, &dr, BPF_ANY);
+    assert(r.has_value());
+
+    // Destination 192.168.99.99 is outside the installed subnet → dst LPM miss.
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("8.8.8.8"), ip_nbo("192.168.99.99"), IPPROTO_TCP)
+        .tcp(1234, 12345)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    // Falls through L3 → L4 → no L4 rule for tcp:12345 → default DROP.
+    assert(res.retval == XDP_DROP);
+
+    MM::delete_elem(loader.subnet_rules_dst_fd(0), &dkey);
+}
+
+TEST(test_l3_src_lookup_wins_over_dst_lookup) {
+    // Same packet has src in src-allow subnet AND dst in dst-drop subnet.
+    // Source-side rule has priority — packet should pass through to L4.
+    using MM = pktgate::loader::MapManager;
+
+    // src rule: 10.0.0.0/8 → ALLOW + next_layer
+    struct lpm_v4_key skey = { .prefixlen = 8, .addr = ip_nbo("10.0.0.0") };
+    struct l3_rule sr{};
+    sr.rule_id = 5560;
+    sr.action  = ACT_ALLOW;
+    sr.has_next_layer = 1;
+    auto r1 = MM::update_elem(loader.subnet_rules_fd(0), &skey, &sr, BPF_ANY);
+    assert(r1.has_value());
+
+    // dst rule: 192.168.42.0/24 → DROP (would win if dst checked first)
+    struct lpm_v4_key dkey = { .prefixlen = 24, .addr = ip_nbo("192.168.42.0") };
+    struct l3_rule dr{};
+    dr.rule_id = 5561;
+    dr.action  = ACT_DROP;
+    auto r2 = MM::update_elem(loader.subnet_rules_dst_fd(0), &dkey, &dr, BPF_ANY);
+    assert(r2.has_value());
+
+    auto pkt = PacketBuilder()
+        .eth(KNOWN_MAC, DST_MAC, ETH_P_IP)
+        .ipv4(ip_nbo("10.5.5.5"), ip_nbo("192.168.42.7"), IPPROTO_TCP)
+        .tcp(1234, 80)
+        .pad();
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    // src ALLOW + has_next_layer → tail call to L4 → tcp:80 has ALLOW rule
+    // in setup_standard_config → XDP_PASS.
+    assert(res.retval == XDP_PASS);
+
+    MM::delete_elem(loader.subnet_rules_fd(0),     &skey);
+    MM::delete_elem(loader.subnet_rules_dst_fd(0), &dkey);
+}
+
+TEST(test_l3_dst_ip6_drops_matching_destination) {
+    // IPv6 sibling of test_l3_dst_ip_drops_matching_destination.
+    using MM = pktgate::loader::MapManager;
+
+    struct lpm_v6_key dkey6{};
+    dkey6.prefixlen = 32;
+    struct in6_addr net6{};
+    inet_pton(AF_INET6, "2001:db8:beef::", &net6);
+    memcpy(dkey6.addr, &net6, 16);
+
+    struct l3_rule dr{};
+    dr.rule_id = 5570;
+    dr.action  = ACT_DROP;
+    auto r = MM::update_elem(loader.subnet6_rules_dst_fd(0), &dkey6, &dr, BPF_ANY);
+    assert(r.has_value());
+
+    auto pkt = build_ipv6_packet(KNOWN_MAC, DST_MAC, IPPROTO_TCP,
+                                  "2001:db8:cafe::1", "2001:db8:beef::1", 20);
+    pkt.tcp(1234, 9999);
+    pkt.pad(86);
+
+    auto res = run_xdp_prog(loader.layer3_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+
+    MM::delete_elem(loader.subnet6_rules_dst_fd(0), &dkey6);
+}
+
 TEST(test_l3_ipv6_lpm_match) {
     // Add IPv6 subnet rule: 2001:db8::/32 → DROP. Send 2001:db8::1 → should match → DROP.
     using MM = pktgate::loader::MapManager;

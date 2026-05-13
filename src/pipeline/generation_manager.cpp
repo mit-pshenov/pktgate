@@ -70,6 +70,20 @@ GenerationManager::clear_shadow_maps(uint32_t gen) {
         lpm6_keys_[gen].clear();
     }
 
+    // dst LPM tries (IPv4 and IPv6) — same shape as src
+    if (!lpm_keys_dst_[gen].empty()) {
+        r = loader::MapManager::delete_keys(
+            loader_.subnet_rules_dst_fd(gen), lpm_keys_dst_[gen]);
+        if (!r) return std::unexpected("clear subnet_rules_dst: " + r.error());
+        lpm_keys_dst_[gen].clear();
+    }
+    if (!lpm6_keys_dst_[gen].empty()) {
+        r = loader::MapManager::delete_keys(
+            loader_.subnet6_rules_dst_fd(gen), lpm6_keys_dst_[gen]);
+        if (!r) return std::unexpected("clear subnet6_rules_dst: " + r.error());
+        lpm6_keys_dst_[gen].clear();
+    }
+
     r = loader::MapManager::clear_hash_map(loader_.vrf_rules_fd(gen));
     if (!r) return std::unexpected("clear vrf_rules: " + r.error());
 
@@ -140,6 +154,34 @@ GenerationManager::populate_subnet6_map(uint32_t gen,
                                         std::to_string(cr.rule.rule_id) + "): " + r.error());
         auto* key_bytes = reinterpret_cast<const uint8_t*>(&cr.subnet_key);
         lpm6_keys_[gen].emplace_back(key_bytes, key_bytes + sizeof(cr.subnet_key));
+    }
+    return {};
+}
+
+std::expected<void, std::string>
+GenerationManager::populate_subnet_dst_map(uint32_t gen,
+                                            const compiler::CompiledRules& rules) {
+    int fd = loader_.subnet_rules_dst_fd(gen);
+    for (auto& cr : rules.l3_rules_dst) {
+        auto r = loader::MapManager::update_elem(fd, &cr.subnet_key, &cr.rule, BPF_ANY);
+        if (!r) return std::unexpected("subnet_rules_dst insert (rule " +
+                                        std::to_string(cr.rule.rule_id) + "): " + r.error());
+        auto* key_bytes = reinterpret_cast<const uint8_t*>(&cr.subnet_key);
+        lpm_keys_dst_[gen].emplace_back(key_bytes, key_bytes + sizeof(cr.subnet_key));
+    }
+    return {};
+}
+
+std::expected<void, std::string>
+GenerationManager::populate_subnet6_dst_map(uint32_t gen,
+                                             const compiler::CompiledRules& rules) {
+    int fd = loader_.subnet6_rules_dst_fd(gen);
+    for (auto& cr : rules.l3v6_rules_dst) {
+        auto r = loader::MapManager::update_elem(fd, &cr.subnet_key, &cr.rule, BPF_ANY);
+        if (!r) return std::unexpected("subnet6_rules_dst insert (rule " +
+                                        std::to_string(cr.rule.rule_id) + "): " + r.error());
+        auto* key_bytes = reinterpret_cast<const uint8_t*>(&cr.subnet_key);
+        lpm6_keys_dst_[gen].emplace_back(key_bytes, key_bytes + sizeof(cr.subnet_key));
     }
     return {};
 }
@@ -217,7 +259,10 @@ GenerationManager::set_layer_present(uint32_t gen,
     // Keep bit layout in sync with LAYER_PRESENT_* in bpf/common.h
     uint8_t mask = 0;
     if (!rules.l2_rules.empty())                        mask |= 0x01;
-    if (!rules.l3_rules.empty())                        mask |= 0x02;
+    if (!rules.l3_rules.empty()    ||
+        !rules.l3v6_rules.empty()  ||
+        !rules.l3_rules_dst.empty() ||
+        !rules.l3v6_rules_dst.empty())                  mask |= 0x02;
     if (!rules.l4_rules.empty())                        mask |= 0x04;
 
     auto r = loader::MapManager::update_elem(fd, &key, &mask, BPF_ANY);
@@ -250,6 +295,18 @@ GenerationManager::prepare(const compiler::CompiledObjects& objects,
     }
 
     r = populate_subnet6_map(gen, rules);
+    if (!r) {
+        clear_shadow_maps(gen);
+        return r;
+    }
+
+    r = populate_subnet_dst_map(gen, rules);
+    if (!r) {
+        clear_shadow_maps(gen);
+        return r;
+    }
+
+    r = populate_subnet6_dst_map(gen, rules);
     if (!r) {
         clear_shadow_maps(gen);
         return r;
