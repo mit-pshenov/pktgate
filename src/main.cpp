@@ -1,4 +1,7 @@
 #include "config/config_parser.hpp"
+#include "config/config_validator.hpp"
+#include "compiler/object_compiler.hpp"
+#include "compiler/rule_compiler.hpp"
 #include "loader/bpf_loader.hpp"
 #include "pipeline/generation_manager.hpp"
 #include "pipeline/pipeline_builder.hpp"
@@ -147,17 +150,19 @@ static bool file_is_nonempty(const char* path) {
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] <config.json>\n";
+        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--check] [--metrics-port PORT] <config.json>\n";
         return 1;
     }
 
     // Parse CLI flags
     int argi = 1;
     uint16_t metrics_port = 0;  // 0 = disabled
+    bool check_only = false;    // --check: parse + validate + compile, then exit
     while (argi < argc && argv[argi][0] == '-') {
         std::string flag = argv[argi];
         if (flag == "--json")       pktgate::log::set_json(true);
         else if (flag == "--debug") pktgate::log::set_level(pktgate::log::Level::DEBUG);
+        else if (flag == "--check") check_only = true;
         else if (flag == "--metrics-port" && argi + 1 < argc) {
             metrics_port = static_cast<uint16_t>(std::atoi(argv[++argi]));
         }
@@ -168,7 +173,7 @@ int main(int argc, char* argv[]) {
         argi++;
     }
     if (argi >= argc) {
-        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--metrics-port PORT] <config.json>\n";
+        std::cerr << "Usage: pktgate_ctl [--json] [--debug] [--check] [--metrics-port PORT] <config.json>\n";
         return 1;
     }
 
@@ -191,6 +196,33 @@ int main(int argc, char* argv[]) {
             cfg.pipeline.layer_2.size(),
             cfg.pipeline.layer_3.size(),
             cfg.pipeline.layer_4.size());
+
+    // --check: dry-run path. Run the same parse → validate → compile pipeline
+    // that live deploy does, but stop before BPF load + attach. Mirrors the
+    // standalone `validate_config` tool so the two stay verdict-consistent on
+    // the test fixture corpora (see tests/test_check_consistency.sh).
+    if (check_only) {
+        auto valid = pktgate::config::validate_config(cfg);
+        if (!valid) {
+            for (auto& e : valid.error())
+                std::cerr << e.rule_context << ": " << e.message << "\n";
+            return 1;
+        }
+        auto objs = pktgate::compiler::compile_objects(cfg.objects);
+        if (!objs) {
+            std::cerr << "object compile: " << objs.error() << "\n";
+            return 1;
+        }
+        auto rules = pktgate::compiler::compile_rules(
+            cfg.pipeline, cfg.objects,
+            [](const std::string&) -> uint32_t { return 1; });
+        if (!rules) {
+            std::cerr << "rule compile: " << rules.error() << "\n";
+            return 1;
+        }
+        std::cout << "OK " << config_path << "\n";
+        return 0;
+    }
 
     // Load BPF programs
     pktgate::loader::BpfLoader loader;

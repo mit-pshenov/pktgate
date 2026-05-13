@@ -332,6 +332,13 @@ add_test(NAME validate_config_bad_unknown_ref
 )
 set_tests_properties(validate_config_bad_unknown_ref PROPERTIES WILL_FAIL TRUE)
 
+# Cross-tool consistency: pktgate_ctl --check and validate_config must agree
+# on every fixture in tests/fixtures/validate_config_{good,bad}/.
+add_test(NAME check_consistency
+    COMMAND bash ${CMAKE_SOURCE_DIR}/tests/test_check_consistency.sh
+        $<TARGET_FILE_DIR:pktgate_ctl> ${CMAKE_SOURCE_DIR}
+)
+
 # ── Test labels for selective runs (ctest -L unit) ───────────
 set_tests_properties(
     config_parser object_compiler generation_logic net_types
@@ -339,6 +346,7 @@ set_tests_properties(
     byte_layout packet_builder ipv6 fault_injection prometheus
     validate_config_good validate_config_bad_dst_ip
     validate_config_bad_empty_l3 validate_config_bad_unknown_ref
+    check_consistency
     PROPERTIES LABELS "unit"
 )
 set_tests_properties(
