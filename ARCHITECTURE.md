@@ -808,7 +808,25 @@ while (g_running) {
   ассерт фиксирует bug-by-design, а не желаемое поведение.
 - **Состояние**: открыто. Tracking — TEST_AUDIT §"Phase 2c P1 — QinQ".
 
-### 9a.2. (place future deferred-by-design items here)
+### 9a.2. Rate-limit reload — emergent regression (open)
+
+- **Symptom**: configuring `bandwidth: "100Kbps"`, generating partial-drop
+  baseline, then `reload_config({bandwidth: "1Mbps"})` causes the rate-limit
+  rule to drop **everything** in the post-reload generation (functional
+  test observed `low=41`, `high=0` over a 500-packet burst). Pre-reload
+  works fine.
+- **Possible roots**:
+  - inotify-triggered reload races with XDP attach state on the new generation
+  - `rate_state_map` carries stale per-CPU buckets from generation 0 into
+    generation 1 (was the suspected P1#7 surface; we landed GC of stale
+    entries in commit `a0d2f8e`, but only via online_cpu accounting — not
+    a clean-on-rule-replace).
+- **Test-anchor**: `functional_tests/test_zz_rate_limit.py::TestRateLimit::test_reload_changes_effective_rate`
+  is marked `@pytest.mark.xfail(strict=False)` — will flip to `XPASS` the
+  moment the underlying behaviour is fixed.
+- **State**: open. Filed 2026-05-13 while building out testing-roadmap #7.
+
+### 9a.3. (place future deferred-by-design items here)
 
 ---
 
