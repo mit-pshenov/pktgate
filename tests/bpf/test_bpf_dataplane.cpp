@@ -1599,6 +1599,111 @@ TEST(test_l4_ipv6_ext_header_chain) {
     assert(res.retval == XDP_PASS); // skipped ext headers → TCP:80 → ALLOW
 }
 
+// ── IPv6 ext-header walker parametric matrix ────────────────
+//
+// Adversarial coverage of L4's bounded ext-header walker (MAX 4 hops,
+// skippable = HBH(0), Routing(43), DestOpt(60), drop-flag = Fragment(44)).
+// Each test exercises one cell of {depth × ext-type × interaction}.
+// Helpers build deterministic packets; final_proto picks TCP(6)/UDP(17).
+//
+// Why parametric: the original test_l4_ipv6_ext_header_chain only covered
+// depth-2 HBH+Routing happy-path; depth-5 fail-closed got added later, but
+// depths 1/3/4 and DestOpt-only / mid-chain-Fragment cells were silent.
+// See _review/TEST_AUDIT.md §"Phase 2d P0 SECURITY — IPv6 ext-header chain".
+
+namespace ipv6_ext {
+constexpr uint8_t HBH      = 0;
+constexpr uint8_t ROUTING  = 43;
+constexpr uint8_t DESTOPT  = 60;
+constexpr uint8_t FRAGMENT = 44;
+constexpr uint8_t TCP      = 6;
+}
+
+/// Build IPv6 packet with a chain of extension headers followed by a TCP
+/// header on the requested port. `chain` is the sequence of ext-header
+/// types (each emits an 8-byte stub: nexthdr + len=0 + 6 zero bytes).
+/// Fragment headers are emitted as the chain entry, but they have no
+/// "real" nexthdr override — the walker stops at them before reading
+/// anything further, so the packet stays well-formed for the dataplane.
+static PacketBuilder build_ipv6_ext_chain_tcp(const std::vector<uint8_t>& chain,
+                                              uint16_t tcp_dport,
+                                              const char* src_v6 = "2001:db8::101",
+                                              const char* dst_v6 = "2001:db8::102") {
+    PacketBuilder pkt;
+    pkt.eth(KNOWN_MAC, DST_MAC, 0x86DD);
+
+    size_t off = pkt.buf.size();
+    pkt.buf.resize(off + 40, 0);
+    uint8_t* ip6 = pkt.buf.data() + off;
+    ip6[0] = 0x60;
+
+    uint16_t plen_host = static_cast<uint16_t>(chain.size() * 8 + 20); // exts + TCP
+    uint16_t plen_nbo  = htons(plen_host);
+    memcpy(ip6 + 4, &plen_nbo, 2);
+    ip6[6] = chain.empty() ? ipv6_ext::TCP : chain[0]; // first nexthdr
+    ip6[7] = 64;
+
+    struct in6_addr saddr{}, daddr{};
+    inet_pton(AF_INET6, src_v6, &saddr);
+    inet_pton(AF_INET6, dst_v6, &daddr);
+    memcpy(ip6 + 8,  &saddr, 16);
+    memcpy(ip6 + 24, &daddr, 16);
+
+    for (size_t i = 0; i < chain.size(); ++i) {
+        uint8_t next = (i + 1 < chain.size()) ? chain[i + 1] : ipv6_ext::TCP;
+        pkt.buf.push_back(next); // next header
+        pkt.buf.push_back(0);    // len=0 → 8 bytes total
+        for (int j = 0; j < 6; ++j) pkt.buf.push_back(0);
+    }
+
+    pkt.tcp(4321, tcp_dport);
+    pkt.pad(static_cast<int>(54 + chain.size() * 8 + 20)); // eth+ip6+exts+tcp
+    return pkt;
+}
+
+TEST(test_l4_ipv6_ext_depth_1_hbh_pass) {
+    auto pkt = build_ipv6_ext_chain_tcp({ipv6_ext::HBH}, 80);
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+TEST(test_l4_ipv6_ext_depth_1_destopt_pass) {
+    // DestOpt was the least-covered of the three skippable types.
+    auto pkt = build_ipv6_ext_chain_tcp({ipv6_ext::DESTOPT}, 80);
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+TEST(test_l4_ipv6_ext_depth_3_mixed_pass) {
+    auto pkt = build_ipv6_ext_chain_tcp(
+        {ipv6_ext::HBH, ipv6_ext::DESTOPT, ipv6_ext::ROUTING}, 80);
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+TEST(test_l4_ipv6_ext_depth_4_at_walker_boundary_pass) {
+    // Walker unrolls 4 iterations. At depth=4 the chain must still resolve
+    // to a transport protocol — anything tighter is a regression.
+    auto pkt = build_ipv6_ext_chain_tcp(
+        {ipv6_ext::HBH, ipv6_ext::HBH, ipv6_ext::HBH, ipv6_ext::HBH}, 80);
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_PASS);
+}
+
+TEST(test_l4_ipv6_ext_fragment_mid_chain_drops) {
+    // Fragment after HBH must be caught by the in-loop frag check at any
+    // depth, not only at position 0 (this was the L3-side gap in P1#8).
+    auto pkt = build_ipv6_ext_chain_tcp(
+        {ipv6_ext::HBH, ipv6_ext::FRAGMENT}, 80);
+    auto res = run_xdp_prog(loader.layer4_prog_fd(), pkt.data(), pkt.size(), 1, true);
+    assert(res.ok);
+    assert(res.retval == XDP_DROP);
+}
+
 TEST(test_l4_ipv6_fragment_after_ext) {
     // IPv6 with Hop-by-Hop(0) ext → then nexthdr=44 (Fragment).
     // L4 stops at fragment header and drops defensively.
