@@ -48,9 +48,18 @@ jobs:
 
       - name: Smoke fuzz (60s each)
         run: |
+          # Explicit target→corpus mapping. The previous ${target#fuzz_}
+          # form produced corpus_config_parser etc., which do not exist —
+          # two of three harnesses ran without seeds. Mapping matches the
+          # overnight matrix below.
+          declare -A corpus=(
+            [fuzz_config_parser]=corpus_config
+            [fuzz_net_types]=corpus_net
+            [fuzz_roundtrip]=corpus_roundtrip
+          )
           for target in fuzz_config_parser fuzz_net_types fuzz_roundtrip; do
-            corpus_dir="fuzz/corpus_${target#fuzz_}"
-            echo "=== $target (60s) ==="
+            corpus_dir="fuzz/${corpus[$target]}"
+            echo "=== $target (60s, corpus=$corpus_dir) ==="
             ./build/$target "$corpus_dir" \
               -max_total_time=60 \
               -print_final_stats=1 \

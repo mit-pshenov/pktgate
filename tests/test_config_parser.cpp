@@ -147,6 +147,20 @@ TEST(test_parse_invalid_json) {
     assert(!result.has_value());
 }
 
+TEST(test_parse_overflow_number_does_not_terminate) {
+    // Regression for fuzz_roundtrip crash-8adc9f7d. nlohmann::json throws
+    // json::out_of_range on numeric overflow during parse — that's NOT a
+    // subclass of json::parse_error, so a too-narrow catch let the
+    // exception escape to std::terminate and abort the process. Now we
+    // catch json::exception (the common base).
+    std::string overflow_input(35, '8');
+    overflow_input[11] = 'E';  // 12-digit mantissa, E, 22-digit exponent
+
+    auto result = parse_config_string(overflow_input);
+    assert(!result.has_value());
+    assert(result.error().find("JSON parse error") != std::string::npos);
+}
+
 TEST(test_parse_unknown_action) {
     auto result = parse_config_string(R"({
         "pipeline": { "layer_2": [{"rule_id":1, "action":"explode"}] }

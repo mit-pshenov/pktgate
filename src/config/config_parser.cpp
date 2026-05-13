@@ -167,7 +167,12 @@ std::expected<Config, std::string> parse_config(const std::string& json_path) {
     try {
         json j = json::parse(f);
         return parse_json(j);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {
+        // Catch json::exception (base class) instead of just parse_error:
+        // nlohmann throws json::out_of_range on numeric overflow during
+        // parsing, and that's NOT a subclass of parse_error — it would
+        // escape to std::terminate. Found by fuzz_roundtrip corpus seed
+        // crash-8adc9f7d ("8888...8E8888...8").
         return std::unexpected(std::string("JSON parse error: ") + e.what());
     }
 }
@@ -176,7 +181,7 @@ std::expected<Config, std::string> parse_config_string(const std::string& json_s
     try {
         json j = json::parse(json_str);
         return parse_json(j);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {
         return std::unexpected(std::string("JSON parse error: ") + e.what());
     }
 }
