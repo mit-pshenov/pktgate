@@ -382,7 +382,7 @@ if(FUZZ)
 
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         # libFuzzer mode (clang with std::expected support required)
-        foreach(target fuzz_config_parser fuzz_net_types fuzz_roundtrip)
+        foreach(target fuzz_config_parser fuzz_net_types fuzz_roundtrip fuzz_bpf_dataplane)
             add_executable(${target} fuzz/${target}.cpp)
             target_link_libraries(${target} PRIVATE pktgate_lib)
             target_compile_options(${target} PRIVATE
@@ -392,7 +392,7 @@ if(FUZZ)
         endforeach()
     else()
         # Standalone mode (GCC / AFL++) — reads from stdin
-        foreach(target fuzz_config_parser fuzz_net_types fuzz_roundtrip)
+        foreach(target fuzz_config_parser fuzz_net_types fuzz_roundtrip fuzz_bpf_dataplane)
             add_executable(${target} fuzz/${target}.cpp)
             target_link_libraries(${target} PRIVATE pktgate_lib)
             target_compile_definitions(${target} PRIVATE FUZZ_STANDALONE)
