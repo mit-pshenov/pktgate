@@ -6,6 +6,7 @@
 #include <cassert>
 #include <iostream>
 #include <cstring>
+#include <random>
 
 using namespace pktgate;
 
@@ -1756,6 +1757,118 @@ TEST(test_l2_mac_group_cross_rule_collision) {
     auto result = compiler::compile_rules(pipeline, objects, null_resolver);
     assert(!result.has_value());
     assert(result.error().find("L2 key collision") != std::string::npos);
+}
+
+// ═══════════════════════════════════════════════════════════
+// Property-based: prefix-≥1 inputs must never produce a wildcard LPM key
+// ═══════════════════════════════════════════════════════════
+//
+// Generates random valid L3 configs with prefixlen ≥ 1 (so the user's
+// intent is never "match all"), runs compile_rules, and asserts that no
+// compiled entry has prefixlen=0. Catches the dst_ip P0 class by construction:
+// any future bug that promotes a non-wildcard input to a wildcard LPM key
+// fails this test. Fixed seed → deterministic, reproducible failures.
+
+static std::string fmt_v4_cidr(uint32_t addr_host_order, uint8_t prefix) {
+    in_addr a{ .s_addr = htonl(addr_host_order) };
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%s/%u", inet_ntoa(a), prefix);
+    return buf;
+}
+
+static std::string fmt_v6_cidr(uint64_t hi, uint64_t lo, uint8_t prefix) {
+    in6_addr a{};
+    for (int i = 0; i < 8; ++i) a.s6_addr[i]     = static_cast<uint8_t>(hi >> ((7 - i) * 8));
+    for (int i = 0; i < 8; ++i) a.s6_addr[8 + i] = static_cast<uint8_t>(lo >> ((7 - i) * 8));
+    char buf[64];
+    inet_ntop(AF_INET6, &a, buf, sizeof(buf));
+    char out[80];
+    snprintf(out, sizeof(out), "%s/%u", buf, prefix);
+    return out;
+}
+
+TEST(prop_v4_no_wildcard_for_prefix_ge_1) {
+    std::mt19937 rng(0xcafebabe);
+    std::uniform_int_distribution<uint32_t> addr_dist;
+    std::uniform_int_distribution<int>      prefix_dist(1, 32);
+    std::uniform_int_distribution<int>      n_dist(1, 8);
+    std::uniform_int_distribution<int>      kind_dist(0, 2);
+
+    constexpr int ITERATIONS = 200;
+    int compiled = 0;
+
+    for (int iter = 0; iter < ITERATIONS; ++iter) {
+        config::ObjectStore objects;
+        config::Pipeline    pipeline;
+        int n = n_dist(rng);
+        for (int i = 0; i < n; ++i) {
+            config::Rule r;
+            r.rule_id = static_cast<uint32_t>(iter * 1000 + i);
+            r.match.src_ip = fmt_v4_cidr(addr_dist(rng),
+                                         static_cast<uint8_t>(prefix_dist(rng)));
+            switch (kind_dist(rng)) {
+                case 0: r.action = config::Action::Allow; r.next_layer = "layer_4"; break;
+                case 1: r.action = config::Action::Drop;  break;
+                case 2: r.action = config::Action::Allow; break;
+            }
+            pipeline.layer_3.push_back(r);
+        }
+        auto cr = compiler::compile_rules(pipeline, objects, null_resolver);
+        // Compile may reject (collisions, dup rule_id, address-on-prefix violation).
+        // Either branch is fine — we only assert the wildcard invariant.
+        if (!cr.has_value()) continue;
+        for (auto& entry : cr->l3_rules) {
+            if (entry.subnet_key.prefixlen == 0) {
+                std::cerr << "  v4 wildcard leaked at iter=" << iter
+                          << " rule_id=" << entry.rule.rule_id
+                          << " seed src_ip=" << *pipeline.layer_3[0].match.src_ip << "\n";
+                assert(false && "compiler produced prefixlen=0 v4 entry from prefix≥1 input");
+            }
+        }
+        ++compiled;
+    }
+    assert(compiled > 0 && "no iteration compiled — generator is broken");
+}
+
+TEST(prop_v6_no_wildcard_for_prefix_ge_1) {
+    std::mt19937_64 rng(0xfeedfacef00dbeefULL);
+    std::uniform_int_distribution<uint64_t> half_dist;
+    std::uniform_int_distribution<int>      prefix_dist(1, 128);
+    std::uniform_int_distribution<int>      n_dist(1, 6);
+    std::uniform_int_distribution<int>      kind_dist(0, 2);
+
+    constexpr int ITERATIONS = 200;
+    int compiled = 0;
+
+    for (int iter = 0; iter < ITERATIONS; ++iter) {
+        config::ObjectStore objects;
+        config::Pipeline    pipeline;
+        int n = n_dist(rng);
+        for (int i = 0; i < n; ++i) {
+            config::Rule r;
+            r.rule_id = static_cast<uint32_t>(iter * 1000 + i);
+            r.match.src_ip6 = fmt_v6_cidr(half_dist(rng), half_dist(rng),
+                                          static_cast<uint8_t>(prefix_dist(rng)));
+            switch (kind_dist(rng)) {
+                case 0: r.action = config::Action::Allow; r.next_layer = "layer_4"; break;
+                case 1: r.action = config::Action::Drop;  break;
+                case 2: r.action = config::Action::Allow; break;
+            }
+            pipeline.layer_3.push_back(r);
+        }
+        auto cr = compiler::compile_rules(pipeline, objects, null_resolver);
+        if (!cr.has_value()) continue;
+        for (auto& entry : cr->l3v6_rules) {
+            if (entry.subnet_key.prefixlen == 0) {
+                std::cerr << "  v6 wildcard leaked at iter=" << iter
+                          << " rule_id=" << entry.rule.rule_id
+                          << " seed src_ip6=" << *pipeline.layer_3[0].match.src_ip6 << "\n";
+                assert(false && "compiler produced prefixlen=0 v6 entry from prefix≥1 input");
+            }
+        }
+        ++compiled;
+    }
+    assert(compiled > 0 && "no v6 iteration compiled — generator is broken");
 }
 
 int main() {
