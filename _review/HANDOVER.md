@@ -1,17 +1,38 @@
 # Handover — pktgate
 
-Last touched: 2026-05-12. Project on pause; main is shippable. Start here.
+Last touched: 2026-06-10 (doc refresh; code state as of 2026-05-13).
+Project on pause; main is shippable. Start here.
 
 ## 30-second status
 
-10/10 P0, 17/22 P1, 1 NEW P0-class, LICENSE — all landed on main. Unit +
+10/10 P0, most P1, 1 NEW P0-class, LICENSE — all landed on main. Unit +
 integration + BPF data-plane tests are green in CI. Functional tests are
 104/104 green (full suite confirmed after every fix in this round). The
 `continue-on-error` shield has been removed from the functional CI job.
 
-The `_review/99_REPORT.md` is the canonical map. Every closed finding
-has an inline `[RESOLVED 2026-05-12]` marker; one is `[PARTIAL]` — see
-§performance.
+The `_review/99_REPORT.md` is the canonical map. Closed findings carry
+inline `[RESOLVED ...]` markers — treat those markers as the
+authoritative status, not the counts in this file. One is `[PARTIAL]` —
+see §performance. One emergent finding is OPEN — see §What's open.
+
+## Post-handover round (2026-05-13)
+
+Five commits landed after this handover was first written:
+
+- `5642d3e` — **dst_ip / dst_ip6 are now REAL match fields** (upgrade of
+  P0-01 from "validator rejection" to implementation): parallel
+  `subnet_rules_dst_{0,1}` + `subnet6_rules_dst_{0,1}` LPM maps, lookup
+  order src → dst → VRF → default. src+dst combo in one rule is rejected
+  (composite-key L3 deferred).
+- `a8aba11` — skeleton-map identity guardrails (runtime + source).
+  **Catch worth knowing:** `reuse_xdp_maps()` must reuse new maps from
+  the *entry* skeleton — without this, layer3 silently loads its own
+  private map copies and population writes to a different map than the
+  program reads from.
+- `184ee76` — dst_ip combination coverage: L4 integration + LPM
+  specificity + reload + property tests.
+- `6f367b9` — fix `parse_config_string` crash on JSON numeric overflow.
+- `baf0312` — fuzz: data-plane harness against the XDP entry program.
 
 ## Where everything lives
 
@@ -51,6 +72,23 @@ If `cmake -B build` fails on `clang-16 not found`, blow away `build/` and
 re-run with `CC=clang-19 CXX=clang++-19` (or whichever you have).
 
 ## What's open
+
+**OPEN emergent finding (2026-05-13): rate-limit reload drops everything.**
+Configure `rate-limit bandwidth=100Kbps`, send 500-packet burst (TCP/8888),
+~41 pass (partial drop, expected). `reload_config({bandwidth: "1Mbps"})`,
+wait 1s for inotify, send another burst — **captured = 0**. The post-reload
+generation drops the entire flow the pre-reload generation passed fine.
+P1#7-shaped: `rate_state_map` is the only non-double-buffered map
+(`bpf/maps.h:217-224`, single PERCPU_HASH, not generation-keyed); commit
+`a0d2f8e` GC'd stale entries but did NOT add an on-reload clean. Where to
+start: `functional_tests/test_zz_rate_limit.py::test_reload_changes_effective_rate`
+(xfail strict=False, reproduces deterministically on the dev box); check
+whether `src/pipeline/generation_manager.cpp` reload path ever calls
+`bpf_map_delete_elem` against `rate_state_map` — if not, that's the smoking
+gun for the stale-bucket hypothesis. If future work touches `rate_state_map`,
+`GenerationManager`, or the inotify reload path, run
+`sudo bash functional_tests/run.sh test_zz_rate_limit.py` — xfail flipping
+to XPASS is the green light to remove the marker.
 
 Tracked entries in `99_REPORT.md` that DIDN'T get `[RESOLVED]`:
 
@@ -135,17 +173,20 @@ background noise.
 
 ## Memory pointers
 
-User-private memory under `~/.claude/projects/-home-user-filter/memory/`:
-- `MEMORY.md` — pointers index
-- `project_pktgate_review.md` — review summary + leverage-ranked plan
-- `feedback_less_asking.md` — "agreed plan → work autonomously"
-- `feedback_push_proactively.md` — push after each commit
-- `project_dpi_context.md` — DPI pre-filter context for GGSN-Gi
-- `project_pktgate_dpdk_sibling.md` — sibling project at /home/user/pktgate-dpdk
+User-private agent memory for this project was consolidated into the
+repo on 2026-06-10: durable context now lives in `CLAUDE.md` at the
+repo root (use case, testing discipline, sibling project), and review
+state lives in this file. The `~/.claude/projects/-home-user-filter/memory/`
+slot was emptied on purpose.
 
 ## Recent commits to context
 
 ```
+baf0312 fuzz: data-plane harness against the XDP entry program
+6f367b9 fix: parse_config_string crash on JSON numeric overflow
+184ee76 dst_ip combination coverage: L4 integration + LPM specificity + reload + property
+a8aba11 Skeleton-map identity guardrails (runtime + source)
+5642d3e L3: real dst_ip / dst_ip6 support with parallel LPM maps
 1a6fef4 functional: pktgate fixture to module scope (#13 partial)
 4e77d2b Refresh ci.yml functional-job comment after #10/#11/#4 (#12)
 e1f2e98 L2 single-dispatch refactor: composite key + active masks (#10 / P1#2/#3/#9)
@@ -166,10 +207,10 @@ e6fe7d8 Wire validate_config into build, compile, CI fixtures (P0-02)
 - Don't touch the generation-swap contract without reading
   `10_generation_manager.md` — it's the load-bearing atomicity in the data
   plane.
-- Don't reintroduce `dst_ip` / `dst_ip6` as match fields without first
-  adding a real destination LPM trie. The validator rejects them
-  precisely because the compiler used to silently expand them into
-  `0.0.0.0/0`.
+- `dst_ip` / `dst_ip6` are real match fields since `5642d3e` (parallel
+  destination LPM maps). The historical hazard — compiler silently
+  expanding them into `0.0.0.0/0` — is closed; what remains rejected is
+  src+dst combo in a single rule (composite-key L3 deferred).
 - Don't add new capture helpers without `-Q in` (or an explicit
   ingress-only equivalent). The `ns_filter` kernel emits a steady
   drip of ND/RS/MLD traffic that any direction-agnostic capture will
